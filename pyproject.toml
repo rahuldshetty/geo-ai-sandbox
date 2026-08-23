@@ -1,0 +1,19 @@
+[project]
+name = "geo-ai"
+requires-python = ">=3.10"
+dependencies = [
+  "python-dotenv",
+  "pydantic-ai[openai,anthropic,google-gla]",
+  "rasterio",
+  "rioxarray",
+  "gdal",
+  "geopandas",
+  "pyogrio",
+  "shapely",
+  "pyproj",
+  "numpy",
+  "pandas",
+  "fastapi",
+  "uvicorn",
+  "python-multipart",
+]
