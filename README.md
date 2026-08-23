@@ -42,9 +42,10 @@ copy .env.example .env
 - **Cells tab** — a notebook-like prompt. Pick `Prompt` to send a message to the
   GeoAI agent (which runs the tools), or `Python` to execute a command directly in
   the kernel. Outputs accumulate as `In[n]` / `Out[n]` cells.
-- **Data tab** — lists the workspace files and lets you **import data files or
-  folders** into the workspace's `data/` folder. Imported data is automatically
-  included in the agent's context, so a later prompt can refer to it directly.
+- **Data tab** — a tree explorer of the workspace files, with **Import files** and
+  **Import folder** buttons that copy into the workspace's `data/` folder (plus a
+  URL download field). Imported data is automatically included in the agent's
+  context, so a later prompt can refer to it directly.
 
 ## Workspace layout
 

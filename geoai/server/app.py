@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import queue
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -225,16 +226,16 @@ def api_set_map_project(body: MapProject) -> dict:
 @app.get("/api/events")
 async def events(request: Request) -> StreamingResponse:
     q = state.subscribe()
-
     async def gen():
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    item = await asyncio.to_thread(q.get)
-                except Exception:
-                    break
+                    item = await asyncio.to_thread(q.get, timeout=0.5)
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+                    continue
                 yield f"event: {item['event']}\ndata: {json.dumps(item['data'])}\n\n"
         finally:
             state.unsubscribe(q)

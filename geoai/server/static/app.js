@@ -590,6 +590,60 @@ function applyTrace(data) {
   if (!container) return;
   appendTraceStep(container, data.step);
 }
+function buildFileTree(files) {
+  const root = { name: "", isDir: true, children: new Map() };
+  for (const f of files) {
+    const parts = String(f).split("/");
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isDir = i < parts.length - 1;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, isDir, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    }
+  }
+  return root;
+}
+
+function sortedChildren(node) {
+  return [...node.children.values()].sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+function renderFileTree(files) {
+  const ul = el("ul", { class: "file-tree" });
+  for (const node of sortedChildren(buildFileTree(files))) {
+    ul.append(renderTreeNode(node));
+  }
+  return ul;
+}
+
+function renderTreeNode(node) {
+  if (node.isDir) {
+    const li = el("li", { class: "tree-dir" });
+    const details = el("details", { open: "" });
+    const summary = el("summary", {});
+    summary.append(el("span", { class: "tree-name", text: node.name }));
+    details.append(summary);
+    const childUl = el("ul", { class: "file-tree" });
+    for (const child of sortedChildren(node)) {
+      childUl.append(renderTreeNode(child));
+    }
+    details.append(childUl);
+    li.append(details);
+    return li;
+  }
+  const li = el("li", { class: "tree-file" });
+  li.append(el("span", { class: "tree-name", text: node.name }));
+  return li;
+}
+
 function renderDataTab() {
   const wrap = el("div", {});
 
@@ -601,8 +655,16 @@ function renderDataTab() {
   }
 
   const localRow = el("div", { class: "import-row" });
-  const fileInput = el("input", { type: "file", multiple: "multiple" });
-  localRow.append(fileInput, el("button", { text: "Import", onclick: () => importLocal(fileInput) }));
+  const filesInput = el("input", { type: "file", multiple: "multiple", style: "display:none" });
+  const folderInput = el("input", { type: "file", webkitdirectory: "", style: "display:none" });
+  filesInput.addEventListener("change", () => importLocal(filesInput));
+  folderInput.addEventListener("change", () => importLocal(folderInput));
+  localRow.append(
+    filesInput,
+    folderInput,
+    el("button", { text: "Import files…", onclick: () => filesInput.click() }),
+    el("button", { text: "Import folder…", onclick: () => folderInput.click() })
+  );
   wrap.append(localRow);
 
   const urlRow = el("div", { class: "import-row" });
@@ -610,13 +672,11 @@ function renderDataTab() {
   urlRow.append(urlInput, el("button", { text: "Download", onclick: () => importUrl(urlInput) }));
   wrap.append(urlRow);
 
-  const list = el("ul", { class: "file-list" });
   if (!state.files.length) {
-    list.append(el("li", { text: "(no files yet)" }));
+    wrap.append(el("div", { class: "empty-hint", text: "(no files yet)" }));
   } else {
-    for (const f of state.files) list.append(el("li", { text: f }));
+    wrap.append(renderFileTree(state.files));
   }
-  wrap.append(list);
 
   return wrap;
 }
@@ -673,16 +733,19 @@ async function doRunAll() {
 
 async function importLocal(fileInput) {
   if (!fileInput.files.length) {
-    toast("Choose a file first");
+    toast("Choose a file or folder first");
     return;
   }
   const fd = new FormData();
-  for (const f of fileInput.files) fd.append("files", f);
+  for (const f of fileInput.files) {
+    fd.append("files", f, f.webkitRelativePath || f.name);
+  }
   try {
     const res = await fetch("/api/import/local", { method: "POST", body: fd });
     if (!res.ok) throw new Error("import failed (" + res.status + ")");
     const result = await res.json();
     const names = result.imported || [];
+    fileInput.value = "";
     await loadState();
     toast("Imported " + names.length + " file(s)");
   } catch (e) {

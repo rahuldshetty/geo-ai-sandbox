@@ -386,11 +386,6 @@ body {
   font-size: 13px;
 }
 
-.import-row input[type="file"] {
-  flex: 1;
-  font-size: 12px;
-}
-
 .import-row button {
   background: #2563eb;
   color: #fff;
@@ -405,18 +400,61 @@ body {
   background: #1d4ed8;
 }
 
-.file-list {
+.file-tree {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.file-list li {
-  padding: 5px 8px;
-  border-bottom: 1px solid #f0f0f0;
+.file-tree .file-tree {
+  padding-left: 16px;
+}
+
+.tree-dir > details > summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  user-select: none;
+}
+
+.tree-dir > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tree-dir > details > summary::before {
+  content: "";
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid #6b7280;
+  transition: transform 0.1s ease;
+}
+
+.tree-dir > details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tree-name {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   word-break: break-all;
+}
+
+.tree-dir > details > summary .tree-name {
+  color: #111827;
+  font-weight: 600;
+}
+
+.tree-file {
+  padding: 4px 6px 4px 18px;
+}
+
+.tree-file .tree-name {
+  color: #374151;
 }
 
 /* -- overlay dialog ------------------------------------------------------- */
