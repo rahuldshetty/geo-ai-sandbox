@@ -33,14 +33,34 @@ def find_files(pattern: str) -> list[str]:
     )
 
 
-def read_file(path: str, max_bytes: int = 1_000_000) -> str:
-    """Return file contents as UTF-8 text (errors replaced)."""
+def read_file(
+    path: str,
+    max_bytes: int = 1_000_000,
+    offset: int = 0,
+    limit: int | None = None,
+) -> str:
+    """Read a UTF-8 text file from the workspace (errors replaced).
+
+    Reads the whole file by default, refusing anything larger than
+    ``max_bytes``. For large files (e.g. Sentinel-1 annotation XML), read a
+    byte range instead: ``offset`` is the 0-based byte to start at, ``limit``
+    the max bytes to return (``None`` = to end of file). ``max_bytes`` still
+    caps the returned slice.
+    """
     ctx = current()
     resolved = ctx.workspace.resolve(path, must_exist=True)
     size = resolved.stat().st_size
-    if size > max_bytes:
-        raise ValueError(f"file too large ({size} bytes > {max_bytes}): {path!r}")
-    return resolved.read_text(encoding="utf-8", errors="replace")
+    if limit is None:
+        if size > max_bytes:
+            raise ValueError(
+                f"file too large ({size} bytes > {max_bytes}): {path!r}; "
+                "read a slice with offset/limit"
+            )
+        return resolved.read_text(encoding="utf-8", errors="replace")
+    with resolved.open("rb") as f:
+        f.seek(offset)
+        data = f.read(min(limit, max_bytes))
+    return data.decode("utf-8", errors="replace")
 
 
 def write_file(path: str, content: str) -> str:

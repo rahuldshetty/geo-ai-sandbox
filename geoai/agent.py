@@ -29,7 +29,9 @@ Rules:
    add_geojson or add_vector_to_map.
 5. Sentinel-1 GRD (.SAFE): the imagery is <safe>/measurement/*-vv.tiff and
    *-vh.tiff. Use find_files to locate them, raster_info to inspect, rescale
-   (percentile stretch) + to_cog, then add_raster.
+   (percentile stretch) + to_cog, then add_raster. The annotation/*.xml files
+   are large metadata — if you need them, read a slice with read_file using
+   offset/limit instead of the whole file.
 6. After changing the map, call describe_map to confirm state.
 7. To focus the map on data you just added, call `fit_bounds` with the `bounds`
    from `raster_info` or `read_vector`. The embedded map bridge has no scripting
