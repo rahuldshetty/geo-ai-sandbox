@@ -1,12 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "geo-ai"
+version = "0.0.1"
+description = "Geospatial-analysis agent in a custom web UI"
 requires-python = ">=3.10"
 dependencies = [
   "python-dotenv",
   "pydantic-ai[openai,anthropic,google-gla]",
   "rasterio",
   "rioxarray",
-  "gdal",
   "geopandas",
   "pyogrio",
   "shapely",
@@ -17,3 +22,9 @@ dependencies = [
   "uvicorn",
   "python-multipart",
 ]
+
+[project.optional-dependencies]
+gdal = ["gdal"]
+
+[tool.setuptools.packages.find]
+include = ["geoai*"]

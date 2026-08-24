@@ -545,21 +545,116 @@ function renderTraceSteps(trace) {
   return nodes;
 }
 
+function isCodeTool(name) {
+  return name === "run_python";
+}
+
+function prettyValue(value) {
+  if (typeof value === "string") {
+    const t = value.trim();
+    if ((t.startsWith("{") && t.endsWith("}")) || (t.startsWith("[") && t.endsWith("]"))) {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 2);
+      } catch (_) {
+        /* not valid JSON — fall through to raw */
+      }
+    }
+    return value;
+  }
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch (_) {
+    return String(value);
+  }
+}
+
+function compactPreview(value) {
+  let s;
+  if (typeof value === "string") s = value;
+  else if (value == null) s = "";
+  else {
+    try {
+      s = JSON.stringify(value);
+    } catch (_) {
+      s = String(value);
+    }
+  }
+  return truncate(String(s).replace(/\s+/g, " ").trim(), 100);
+}
+
+function extractCode(args) {
+  let obj = args;
+  if (typeof obj === "string") {
+    try {
+      obj = JSON.parse(obj);
+    } catch (_) {
+      return obj;
+    }
+  }
+  if (obj && typeof obj === "object") {
+    if (obj.code != null) return obj.code;
+    if (obj.source != null) return obj.source;
+  }
+  return obj;
+}
+
+function codeBlock(content) {
+  const pre = el("pre", { class: "trace-code" });
+  pre.append(el("code", { text: content == null ? "" : String(content) }));
+  return pre;
+}
+
+function collapsibleStep(cls, icon, name, preview, body) {
+  const details = el("details", { class: "trace-step " + cls });
+  const summary = el("summary", {});
+  summary.append(
+    el("span", { class: "trace-icon", text: icon }),
+    el("span", { class: "trace-name", text: name || "" })
+  );
+  if (preview) {
+    summary.append(el("span", { class: "trace-preview", text: preview }));
+  }
+  details.append(summary);
+  details.append(el("div", { class: "trace-body" }, [body]));
+  return details;
+}
+
+function toolCallNode(step) {
+  const name = step.name || "";
+  if (isCodeTool(name)) {
+    const code = extractCode(step.args);
+    return collapsibleStep(
+      "tool-call",
+      "→",
+      name,
+      compactPreview(code),
+      codeBlock(code)
+    );
+  }
+  return collapsibleStep(
+    "tool-call",
+    "→",
+    name,
+    compactPreview(step.args),
+    codeBlock(prettyValue(step.args))
+  );
+}
+
+function toolResultNode(step) {
+  const name = step.name || "";
+  return collapsibleStep(
+    "tool-result",
+    "←",
+    name,
+    compactPreview(step.content),
+    codeBlock(prettyValue(step.content))
+  );
+}
+
 function traceStepNode(step) {
-  if (step.type === "tool_call") {
-    return el("div", { class: "trace-step tool-call" }, [
-      el("span", { class: "trace-icon", text: "→" }),
-      el("span", { class: "trace-name", text: step.name || "" }),
-      el("code", { class: "trace-args", text: truncate(step.args || "", 240) }),
-    ]);
-  }
-  if (step.type === "tool_result") {
-    return el("div", { class: "trace-step tool-result" }, [
-      el("span", { class: "trace-icon", text: "←" }),
-      el("span", { class: "trace-name", text: step.name || "" }),
-      el("span", { class: "trace-result", text: truncate(step.content || "", 320) }),
-    ]);
-  }
+  if (step.type === "tool_call") return toolCallNode(step);
+  if (step.type === "tool_result") return toolResultNode(step);
   return null;
 }
 
@@ -814,10 +909,10 @@ function closeDialog() {
 
 function dialogActions(dialog, primary, onPrimary) {
   const actions = el("div", { class: "dialog-actions" });
-  actions.append(
-    el("button", { text: "Cancel", onclick: closeDialog }),
-    el("button", { class: "primary", text: primary, onclick: onPrimary })
-  );
+  actions.append(el("button", { text: "Cancel", onclick: closeDialog }));
+  if (primary) {
+    actions.append(el("button", { class: "primary", text: primary, onclick: onPrimary }));
+  }
   dialog.append(actions);
 }
 
@@ -855,7 +950,7 @@ function openOpenDialog() {
       );
     }
     dialog.append(list);
-    dialogActions(dialog, "Cancel", closeDialog);
+    dialogActions(dialog, null, null);
   });
 }
 

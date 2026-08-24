@@ -22,7 +22,7 @@ except ImportError:  # pragma: no cover
 
 from ..context import current
 
-_TIMEOUT = 60.0
+_TIMEOUT = 300.0
 
 
 def run_python(code: str) -> str:

@@ -10,7 +10,7 @@ duration, so workspace open/close/save blocks until the current run finishes
 from __future__ import annotations
 
 import asyncio
-import json
+
 import queue
 import threading
 import traceback
@@ -41,16 +41,18 @@ def _filename_from_url(url: str) -> str:
     return name or "download"
 
 
-def _stringify(value: object) -> str:
-    """Coerce a tool arg/result into a compact display string."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
+def _json_safe(value: object) -> object:
+    """Coerce a tool arg/result into a JSON-serializable structure.
+
+    Preserves dict/list shape (so the UI can pretty-print JSON and detect
+    code-bearing tools) while falling back to ``str`` for anything exotic.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, (list, tuple)):
-        return "\n".join(_stringify(v) for v in value)
+        return [_json_safe(v) for v in value]
     if isinstance(value, dict):
-        return json.dumps(value, ensure_ascii=False, default=str)
+        return {str(k): _json_safe(v) for k, v in value.items()}
     return str(value)
 
 
@@ -59,13 +61,13 @@ def _event_to_step(event: object) -> dict | None:
     ek = getattr(event, "event_kind", None)
     if ek == "function_tool_call":
         part = event.part
-        return {"type": "tool_call", "name": part.tool_name, "args": _stringify(part.args)}
+        return {"type": "tool_call", "name": part.tool_name, "args": _json_safe(part.args)}
     if ek == "function_tool_result":
         part = event.part
         return {
             "type": "tool_result",
             "name": getattr(part, "tool_name", None),
-            "content": _stringify(getattr(part, "content", None)),
+            "content": _json_safe(getattr(part, "content", None)),
         }
     if ek == "part_start":
         p = event.part
