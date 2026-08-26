@@ -5,8 +5,17 @@ from __future__ import annotations
 import os
 
 from pydantic_ai import Agent
+from pydantic_ai.capabilities import ReinjectSystemPrompt
+from pydantic_ai_harness import (
+    ClearToolResults,
+    Planning,
+    SummarizingCompaction,
+    TieredCompaction,
+)
 
+from .config import max_history_tokens
 from .context import GeoContext, set_context
+from .plan_store import JsonPlanStore
 from .skills import ALL_TOOLS
 
 SYSTEM_PROMPT = """You are GeoAI, a geospatial-analysis agent in a Geo-AI web workspace.
@@ -65,17 +74,36 @@ def resolve_model(model: str):
     return infer_model(model, provider_factory=_factory)
 
 
-def build_agent(ctx: GeoContext, model: str) -> Agent:
+def build_agent(ctx: GeoContext, model: str, max_tokens: int | None = None) -> Agent:
     """Build a pydantic-ai ``Agent`` bound to ``ctx`` with every skill tool.
 
     The tools read the active context through the process-wide holder set here
     (marimo's chat adapter invokes the agent without injecting ``deps``), so the
     shared live map and workspace are always reachable. The built agent is also
     stored so callbacks can reach the latest instance without a stale closure.
+
+    ``max_tokens`` is the in-run compaction target (``TieredCompaction``);
+    ``None`` falls back to ``GEOAI_MAX_HISTORY_TOKENS`` for headless use.
     """
     global _agent
     set_context(ctx)
-    agent = Agent(resolve_model(model), system_prompt=SYSTEM_PROMPT)
+    budget = max_tokens if max_tokens is not None else max_history_tokens()
+    plan_store = JsonPlanStore(str(ctx.workspace.root / "plan.json"), session="default")
+    agent = Agent(
+        resolve_model(model),
+        system_prompt=SYSTEM_PROMPT,
+        capabilities=[
+            ReinjectSystemPrompt(),
+            Planning(store=plan_store),
+            TieredCompaction(
+                tiers=[
+                    ClearToolResults(max_tokens=1, keep_pairs=3),
+                    SummarizingCompaction(max_messages=1, keep_messages=20),
+                ],
+                target_tokens=budget,
+            ),
+        ],
+    )
     for tool in ALL_TOOLS:
         agent.tool_plain(tool)
 

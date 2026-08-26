@@ -17,6 +17,22 @@ def model_from_env() -> str:
     return os.getenv("GEOAI_MODEL", DEFAULT_MODEL)
 
 
+def max_history_tokens() -> int:
+    """Return the conversation history token budget.
+
+    ``GEOAI_MAX_HISTORY_TOKENS`` (default 32000) bounds both the prior
+    prompt-cell history replayed into a new cell and the in-run compaction
+    target (``TieredCompaction``). ``0`` disables the cross-cell pre-filter.
+    Invalid values fall back to the default.
+    """
+    raw = os.getenv("GEOAI_MAX_HISTORY_TOKENS", "32000").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 32000
+    return max(0, value)
+
+
 def resolve_workspace_name(override: str | None = None) -> str:
     """Resolve the active workspace name.
 

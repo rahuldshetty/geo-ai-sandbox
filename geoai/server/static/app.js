@@ -10,6 +10,7 @@ const state = {
   map_app_url: null,
   files: [],
   selected_tab: "Cells",
+  settings: { model: "", max_history_tokens: 32000, theme: "light" },
 };
 
 // -- map bridge state ------------------------------------------------------
@@ -190,6 +191,13 @@ function applySnapshot(snap) {
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
+  state.settings = snap.settings || { model: "", max_history_tokens: 32000, theme: "light" };
+  applyTheme();
+}
+
+function applyTheme() {
+  const theme = (state.settings && state.settings.theme) || "light";
+  document.documentElement.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
 }
 
 async function postThenRender(method, url, body) {
@@ -291,7 +299,12 @@ function render() {
 
 function renderMenubar() {
   const bar = el("div", { id: "menubar" });
-
+  bar.append(
+    el("div", { class: "brand" }, [
+      el("span", { class: "brand-mark", text: "◈" }),
+      el("span", { class: "brand-name", text: "Geo-AI" }),
+    ])
+  );
   const fileMenu = el("div", { class: "menu" });
   const fileBtn = el("button", { text: "File", onclick: () => toggleMenu(fileMenu) });
   const fileItems = el("div", { class: "menu-items" });
@@ -300,6 +313,8 @@ function renderMenubar() {
     menuItem("Open…", () => openOpenDialog()),
     menuItem("Save", () => doSave()),
     menuItem("Close", () => postThenRender("POST", "/api/workspace/close")),
+    el("div", { class: "separator" }),
+    menuItem("Settings…", () => openSettingsDialog()),
     el("div", { class: "separator" }),
     menuItem("Exit", () => doExit())
   );
@@ -354,7 +369,7 @@ function renderSidePanel() {
   );
   const content = el("div", { id: "tab-content" });
   content.append(state.selected_tab === "Cells" ? renderCellsTab() : renderDataTab());
-  panel.append(tabbar, content);
+  panel.append(tabbar, content, renderStatusBar());
   return panel;
 }
 
@@ -481,6 +496,11 @@ function renderCell(cell) {
     } else if (cell.status === "stopped") {
       outRow.append(el("span", { class: "running stopped", text: "stopped" }));
     }
+    if (kind === "prompt" && cell.usage) {
+      outRow.append(
+        el("span", { class: "usage", text: usageLabel(cell.usage), title: usageTitle(cell.usage) })
+      );
+    }
     box.append(outRow);
 
     if (kind === "prompt") {
@@ -517,6 +537,38 @@ function editMarkdown(cell) {
 function truncate(s, n) {
   s = String(s == null ? "" : s);
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function formatTokens(n) {
+  n = Number(n) || 0;
+  if (n >= 1000000) return (n / 1000000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
+}
+
+function formatCost(c) {
+  if (c == null) return null;
+  const n = Number(c);
+  if (!isFinite(n) || n === 0) return null;
+  return "$" + (n < 0.001 ? n.toExponential(1) : n.toFixed(4));
+}
+
+function usageLabel(u) {
+  const parts = [];
+  if (u.input_tokens != null) parts.push("↑" + formatTokens(u.input_tokens));
+  if (u.output_tokens != null) parts.push("↓" + formatTokens(u.output_tokens));
+  const cost = formatCost(u.cost);
+  if (cost) parts.push(cost);
+  return parts.join(" ");
+}
+
+function usageTitle(u) {
+  const parts = [];
+  if (u.requests != null) parts.push(u.requests + " request" + (u.requests === 1 ? "" : "s"));
+  if (u.tool_calls != null) parts.push(u.tool_calls + " tool call" + (u.tool_calls === 1 ? "" : "s"));
+  if (u.total_tokens != null) parts.push(u.total_tokens + " total tokens");
+  if (u.cache_read_tokens) parts.push(u.cache_read_tokens + " cached read tokens");
+  return parts.join(" · ");
 }
 
 function renderTraceSteps(trace) {
@@ -954,6 +1006,103 @@ function openOpenDialog() {
   });
 }
 
+function openSettingsDialog() {
+  openDialog((dialog) => {
+    dialog.append(el("h3", { text: "Settings" }));
+
+    const row = (label, hint, input) => {
+      const r = el("div", { class: "settings-row" });
+      const labels = el("div", { class: "settings-labels" });
+      labels.append(el("label", { text: label }));
+      if (hint) labels.append(el("span", { class: "settings-hint", text: hint }));
+      r.append(labels, input);
+      return r;
+    };
+
+    const modelInput = el("input", {
+      type: "text",
+      value: state.settings.model || "",
+      placeholder: "openai:gpt-4o",
+    });
+    const budgetInput = el("input", {
+      type: "number",
+      min: "0",
+      step: "1000",
+      value: state.settings.max_history_tokens != null ? state.settings.max_history_tokens : 32000,
+    });
+    const themeSelect = el("select", {});
+    themeSelect.append(
+      el("option", { value: "light", text: "Light" }),
+      el("option", { value: "dark", text: "Dark" })
+    );
+    themeSelect.value = state.settings.theme === "dark" ? "dark" : "light";
+
+    dialog.append(
+      row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
+      row("History budget (tokens)", "context retained across prompt cells before compaction", budgetInput),
+      row("Theme", "app shell appearance", themeSelect)
+    );
+
+    dialogActions(dialog, "Save", async () => {
+      try {
+        const settings = await api("PUT", "/api/settings", {
+          model: modelInput.value.trim(),
+          max_history_tokens: Number(budgetInput.value) || 0,
+          theme: themeSelect.value,
+        });
+        state.settings = settings;
+        applyTheme();
+        closeDialog();
+        toast("Settings saved");
+        render();
+      } catch (e) {
+        toast(e.message || String(e));
+      }
+    });
+  });
+}
+
+function aggregateUsage() {
+  let input = 0, output = 0, requests = 0, toolCalls = 0, cost = 0, has = false;
+  for (const c of state.cells || []) {
+    const u = c.usage;
+    if (!u) continue;
+    has = true;
+    input += u.input_tokens || 0;
+    output += u.output_tokens || 0;
+    requests += u.requests || 0;
+    toolCalls += u.tool_calls || 0;
+    if (u.cost != null) cost += Number(u.cost) || 0;
+  }
+  return { input, output, requests, toolCalls, cost, has };
+}
+
+function renderStatusBar() {
+  const bar = el("div", { id: "status-bar" });
+  const ws = el("span", { class: "status-ws", text: state.active_workspace || "No workspace" });
+  bar.append(ws);
+  const u = aggregateUsage();
+  if (u.has) {
+    const stats = el("div", { class: "status-stats" });
+    stats.append(
+      el("span", { class: "stat", title: "Input tokens", text: "↑ " + formatTokens(u.input) }),
+      el("span", { class: "stat", title: "Output tokens", text: "↓ " + formatTokens(u.output) }),
+      el("span", { class: "stat", title: "Requests", text: u.requests + " req" })
+    );
+    const cost = formatCost(u.cost);
+    if (cost) stats.append(el("span", { class: "stat cost", text: cost }));
+    bar.append(stats);
+  }
+  return bar;
+}
+
+function refreshStatusBar() {
+  const bar = document.getElementById("status-bar");
+  if (bar && bar.parentElement) {
+    bar.replaceWith(renderStatusBar());
+  }
+}
+
 // -- SSE -------------------------------------------------------------------
 
 function connectSSE() {
@@ -967,6 +1116,7 @@ function connectSSE() {
       state.cells[idx] = { ...state.cells[idx], ...data };
     }
     renderCellsOnly();
+    refreshStatusBar();
   });
   es.addEventListener("trace", (e) => {
     applyTrace(JSON.parse(e.data));
@@ -980,6 +1130,14 @@ function connectSSE() {
     const data = JSON.parse(e.data);
     state.files = data.files || [];
     renderDataOnly();
+  });
+  es.addEventListener("settings", (e) => {
+    const data = JSON.parse(e.data);
+    if (data.settings) {
+      state.settings = data.settings;
+      applyTheme();
+      render();
+    }
   });
 }
 

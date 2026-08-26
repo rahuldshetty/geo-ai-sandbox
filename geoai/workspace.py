@@ -19,8 +19,9 @@ class Workspace:
     """A workspace rooted at ``<repo>/workspaces/<name>/``.
 
     Layout: ``data/`` (inputs), ``results/`` (outputs), ``maps/`` (saved
-    ``.geolibre.json`` projects), plus a ``workspace.json`` manifest recording
-    outputs and a monotonically increasing ``version`` counter.
+    ``.geolibre.json`` projects), ``traces/`` (per-cell agent run JSONL), plus
+    a ``workspace.json`` manifest recording outputs and a monotonically
+    increasing ``version`` counter.
     """
 
     def __init__(self, root: str | Path):
@@ -41,11 +42,15 @@ class Workspace:
     def maps(self) -> Path:
         return self.root / "maps"
 
+    @property
+    def traces(self) -> Path:
+        return self.root / "traces"
+
     # -- lifecycle -------------------------------------------------------
 
     def create(self) -> "Workspace":
         """Create the directory tree and manifest; idempotent."""
-        for d in (self.data, self.results, self.maps):
+        for d in (self.data, self.results, self.maps, self.traces):
             d.mkdir(parents=True, exist_ok=True)
         if not self._manifest_path.exists():
             self._write_manifest(

@@ -10,10 +10,10 @@ duration, so workspace open/close/save blocks until the current run finishes
 from __future__ import annotations
 
 import asyncio
-
 import queue
 import threading
 import traceback
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,10 +22,12 @@ from geolibre import project as _project
 from pydantic_ai import CancellationToken, RunCancelled
 
 
+from .. import trace
 from ..agent import build_agent, current_agent
-from ..config import list_workspaces, load_env, model_from_env, workspace_root
+from ..config import list_workspaces, load_env, workspace_root
 from ..context import GeoContext, set_context
 from ..map_view import persist_map
+from ..settings import load_settings, save_settings
 from ..skills.python_tools import run_python
 from ..skills.workspace_tools import download
 from ..workspace import Workspace
@@ -108,10 +110,10 @@ def _error_output(ename: str, text: str) -> dict:
 
 class AppState:
     """Single-owner state for the running Geo-AI server."""
-
     def __init__(self) -> None:
         self.lock = threading.RLock()
-        self.model = model_from_env()
+        self.settings = load_settings()
+        self.model = self.settings["model"]
         self.map = Map(
             center=(0, 0), zoom=2, height="100%", layout="embed", theme="light"
         )
@@ -134,6 +136,7 @@ class AppState:
         with self.lock:
             ws = Workspace(workspace_root(name)).create()
             self.cells = read_nb(ws.root / "notebook.ipynb")
+            self._rehydrate_traces(ws)
             snap = ws.maps / _SNAPSHOT
             if snap.exists():
                 self.map.load_project(snap)
@@ -143,7 +146,7 @@ class AppState:
                 )
             ctx = GeoContext(map=self.map, workspace=ws, version=None)
             set_context(ctx)
-            build_agent(ctx, self.model)
+            build_agent(ctx, self.model, self.settings["max_history_tokens"])
             self.active_name = name
             self.workspace = ws
 
@@ -168,6 +171,118 @@ class AppState:
                 write_nb(self.workspace.root / "notebook.ipynb", self.cells)
                 persist_map(self.map, self.workspace)
             return {"ok": True}
+
+    def update_settings(self, patch: dict) -> dict:
+        """Merge ``patch`` into settings, persist, and rebuild the agent on change.
+
+        Model and token-budget changes require a rebuilt agent (the compaction
+        target is baked in at construction); theme changes do not. A rebuild
+        failure (e.g. an invalid model string) rolls back and raises.
+        """
+        with self.lock:
+            old_model = self.settings.get("model")
+            old_budget = self.settings.get("max_history_tokens", 32000)
+            rebuild = False
+            if "model" in patch and patch["model"]:
+                new_model = patch["model"].strip()
+                if new_model and new_model != old_model:
+                    self.settings["model"] = new_model
+                    self.model = new_model
+                    rebuild = True
+            if "max_history_tokens" in patch and patch["max_history_tokens"] is not None:
+                try:
+                    budget = max(0, int(patch["max_history_tokens"]))
+                except (TypeError, ValueError):
+                    budget = old_budget
+                if budget != old_budget:
+                    self.settings["max_history_tokens"] = budget
+                    rebuild = True
+            if "theme" in patch and patch["theme"] in ("light", "dark"):
+                self.settings["theme"] = patch["theme"]
+            try:
+                self.settings = save_settings(self.settings)
+                if rebuild and self.workspace is not None:
+                    ctx = GeoContext(map=self.map, workspace=self.workspace, version=None)
+                    set_context(ctx)
+                    build_agent(ctx, self.model, self.settings["max_history_tokens"])
+            except Exception as exc:  # noqa: BLE001 - roll back and surface
+                self.settings["model"] = old_model
+                self.settings["max_history_tokens"] = old_budget
+                self.model = old_model
+                self.settings = save_settings(self.settings)
+                raise ValueError(f"could not apply settings: {exc}") from exc
+            return dict(self.settings)
+
+    # -- traces ------------------------------------------------------------
+
+    def _trace_path(self, cell_id: str) -> "Path | None":
+        if self.workspace is None:
+            return None
+        return self.workspace.traces / f"{cell_id}.jsonl"
+
+    def _rehydrate_traces(self, ws: Workspace) -> None:
+        """Restore per-cell trace steps and token usage from ``traces/*.jsonl``."""
+        for cell in self.cells:
+            if cell.get("kind") != "prompt":
+                continue
+            loaded = trace.read_trace(ws.traces / f"{cell['id']}.jsonl", include_messages=False)
+            if loaded["steps"]:
+                cell["trace"] = loaded["steps"]
+            if loaded["usage"] is not None:
+                cell["usage"] = loaded["usage"]
+            if loaded["run_id"]:
+                cell["run_id"] = loaded["run_id"]
+            if loaded["conversation_id"]:
+                cell["conversation_id"] = loaded["conversation_id"]
+
+    def _finish_trace(
+        self,
+        cell_id: str,
+        *,
+        status: str,
+        output: str | None = None,
+        error: str | None = None,
+        usage: dict | None = None,
+        conversation_id: str | None = None,
+    ) -> None:
+        path = self._trace_path(cell_id)
+        if path is not None:
+            trace.append_result(
+                path,
+                status=status,
+                output=output,
+                error=error,
+                usage=usage,
+                conversation_id=conversation_id,
+            )
+
+    def _history_for(self, cell_id: str) -> "list | None":
+        """Gather prior prompt cells' messages as ``message_history``."""
+        if self.workspace is None:
+            return None
+        messages = []
+        for cell in self.cells:
+            if cell["id"] == cell_id:
+                break
+            if cell.get("kind") != "prompt":
+                continue
+            messages.extend(
+                trace.read_messages(self.workspace.traces / f"{cell['id']}.jsonl")
+            )
+        if not messages:
+            return None
+        return self._trim_history(messages)
+
+    def _trim_history(self, messages: list) -> list:
+        budget = self.settings.get("max_history_tokens", 32000)
+        if budget <= 0 or len(messages) <= 1:
+            return messages
+        # Drop oldest turns but keep the head message (it carries the system
+        # prompt and the dynamic data-context part). Pydantic-ai repairs any
+        # tool-call/tool-return pairing broken by trimming.
+        while len(messages) > 1 and trace.estimate_tokens(messages) > budget:
+            messages.pop(1)
+        return messages
 
     # -- cell ops ----------------------------------------------------------
 
@@ -221,7 +336,13 @@ class AppState:
             cell["status"] = "running"
             cell["outputs"] = []
             cell["trace"] = []
-            self.broadcast("cell", {"id": cell_id, "status": "running", "trace": []})
+            cell["usage"] = None
+            cell["run_id"] = None
+            cell["conversation_id"] = None
+            self.broadcast(
+                "cell",
+                {"id": cell_id, "status": "running", "trace": [], "usage": None},
+            )
             self._run_q.put(cell_id)
 
     def run_all(self) -> None:
@@ -250,17 +371,20 @@ class AppState:
                 cell["outputs"] = [_stream_output(output)]
         else:  # prompt
             trace_steps: list[dict] = []
-            output, stopped, error = self._run_prompt(cell["id"], source, trace_steps.append)
+            result = self._run_prompt(cell["id"], source, trace_steps.append)
             cell["trace"] = trace_steps
-            if stopped:
+            cell["usage"] = result.get("usage")
+            cell["run_id"] = result.get("run_id")
+            cell["conversation_id"] = result.get("conversation_id")
+            if result.get("stopped"):
                 cell["status"] = "stopped"
                 cell["outputs"] = [_stream_output("Stopped.")]
-            elif error is not None:
+            elif result.get("error") is not None:
                 cell["status"] = "error"
-                cell["outputs"] = [_error_output("AgentError", f"ERROR: {error}")]
+                cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
             else:
                 cell["status"] = "done"
-                cell["outputs"] = [_stream_output(output)]
+                cell["outputs"] = [_stream_output(result["output"])]
         self._save_cells()
 
     def stop_cell(self, cell_id: str) -> bool:
@@ -273,47 +397,102 @@ class AppState:
             return True
         return False
 
-    def _run_prompt(
-        self,
-        cell_id: str,
-        source: str,
-        on_trace,
-    ) -> tuple[str | None, bool, str | None]:
+    def _run_prompt(self, cell_id: str, source: str, on_trace) -> dict:
         """Run a prompt cell through the agent, streaming trace steps.
 
-        Returns ``(output, stopped, error)``: exactly one of ``output``/``error``
-        is non-null unless the run was stopped.
+        Returns a dict with ``output``/``stopped``/``error`` plus ``usage``,
+        ``run_id``, and ``conversation_id`` for the UI and trace persistence.
         """
         with self._run_tokens_lock:
             if cell_id in self._cancelled:
                 self._cancelled.discard(cell_id)
-                return None, True, None
+                return {
+                    "output": None,
+                    "stopped": True,
+                    "error": None,
+                    "usage": None,
+                    "run_id": None,
+                    "conversation_id": None,
+                }
             token = CancellationToken()
             self._run_tokens[cell_id] = token
         try:
-            output = asyncio.run(self._run_prompt_async(cell_id, source, token, on_trace))
-            return output, False, None
+            return asyncio.run(self._run_prompt_async(cell_id, source, token, on_trace))
         except RunCancelled:
-            return None, True, None
+            self._finish_trace(cell_id, status="stopped")
+            return {
+                "output": None,
+                "stopped": True,
+                "error": None,
+                "usage": None,
+                "run_id": None,
+                "conversation_id": None,
+            }
         except Exception as exc:  # noqa: BLE001 - surface failures in the cell output
-            return None, False, str(exc)
+            self._finish_trace(cell_id, status="error", error=str(exc))
+            return {
+                "output": None,
+                "stopped": False,
+                "error": str(exc),
+                "usage": None,
+                "run_id": None,
+                "conversation_id": None,
+            }
         finally:
             with self._run_tokens_lock:
                 self._run_tokens.pop(cell_id, None)
                 self._cancelled.discard(cell_id)
 
-    async def _run_prompt_async(self, cell_id: str, source: str, token, on_trace) -> str:
+    async def _run_prompt_async(self, cell_id: str, source: str, token, on_trace) -> dict:
         agent = current_agent()
+        trace_path = self._trace_path(cell_id)
+        run_id = uuid.uuid4().hex
+        if trace_path is not None:
+            trace.write_run(
+                trace_path,
+                cell_id=cell_id,
+                run_id=run_id,
+                model=self.model,
+                prompt=source,
+            )
 
         async def on_events(ctx, events):  # noqa: ARG001 - ctx unused
             async for event in events:
                 step = _event_to_step(event)
                 if step is not None:
                     on_trace(step)
+                    if trace_path is not None:
+                        trace.append_step(trace_path, step)
                     self.broadcast("trace", {"id": cell_id, "step": step})
 
-        result = await agent.run(source, event_stream_handler=on_events, cancellation_token=token)
-        return str(result.output)
+        history = self._history_for(cell_id)
+        result = await agent.run(
+            source,
+            event_stream_handler=on_events,
+            cancellation_token=token,
+            message_history=history,
+            run_id=run_id,
+        )
+
+        usage = trace.usage_to_dict(result.usage)
+        if trace_path is not None:
+            trace.append_messages(trace_path, result.new_messages())
+            trace.append_result(
+                trace_path,
+                status="done",
+                output=str(result.output),
+                usage=usage,
+                conversation_id=result.conversation_id,
+            )
+        return {
+            "output": str(result.output),
+            "stopped": False,
+            "error": None,
+            "usage": usage,
+            "run_id": run_id,
+            "conversation_id": result.conversation_id,
+        }
+
 
     def _run_worker(self) -> None:
         while True:
@@ -383,6 +562,7 @@ class AppState:
                 "map_project": self.map.to_project(),
                 "map_app_url": self.map._app_url,
                 "files": self.workspace.list_files() if self.workspace else [],
+                "settings": dict(self.settings),
             }
 
     def broadcast(self, event: str, data: dict) -> None:

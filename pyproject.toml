@@ -10,6 +10,7 @@ requires-python = ">=3.10"
 dependencies = [
   "python-dotenv",
   "pydantic-ai[openai,anthropic,google-gla]",
+  "pydantic-ai-harness>=0.24.0",
   "rasterio",
   "rioxarray",
   "geopandas",

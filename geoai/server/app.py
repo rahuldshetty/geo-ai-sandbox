@@ -56,6 +56,12 @@ class MapProject(BaseModel):
     project: dict
 
 
+class UpdateSettings(BaseModel):
+    model: str | None = None
+    max_history_tokens: int | None = None
+    theme: str | None = None
+
+
 # -- static -----------------------------------------------------------------
 
 
@@ -74,6 +80,18 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 def api_state() -> dict:
     return state.snapshot()
 
+
+@app.get("/api/settings")
+def api_get_settings() -> dict:
+    return state.settings
+
+
+@app.put("/api/settings")
+def api_update_settings(body: UpdateSettings) -> dict:
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    settings = state.update_settings(patch)
+    state.broadcast("settings", {"settings": settings})
+    return settings
 
 # -- workspace ---------------------------------------------------------------
 
