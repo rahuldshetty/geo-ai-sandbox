@@ -46,6 +46,18 @@ def describe_map() -> dict:
     return _require_map(current()).describe()
 
 
+def list_colormaps() -> dict[str, list[str]]:
+    """Return the named color ramps valid for ``colormap``/``palette`` arguments.
+
+    Each key is a valid ``colormap`` value for ``add_raster``/``add_colorbar``
+    and a valid ``palette`` value for ``classify_layer``/``add_vector_to_map``;
+    the value is the ramp's anchor CSS colors. Prefer this over guessing a name.
+    """
+    from geolibre.color_ramp import VECTOR_COLOR_RAMPS
+
+    return {name: list(colors) for name, colors in VECTOR_COLOR_RAMPS.items()}
+
+
 def add_geojson(data: str, name: str, style: dict[str, Any] | None = None) -> str:
     """Add a GeoJSON layer and return its id.
 
@@ -85,7 +97,9 @@ def add_raster(
 ) -> str:
     """Add a raster (COG/GeoTIFF) layer and return its id.
 
-    ``rescale`` is a ``[min, max]`` stretch for a single band.
+    ``rescale`` is a ``[min, max]`` stretch for a single band. ``colormap`` is
+    one of the names from :func:`list_colormaps` (e.g. ``"viridis"``, ``"gray"``,
+    ``"blues"``, ``"terrain"``); omit it to render the raw values.
     """
     ctx = current()
     m = _require_map(ctx)
@@ -212,7 +226,10 @@ def add_legend(
 
 
 def add_colorbar(colormap: str = "viridis", vmin: float = 0.0, vmax: float = 1.0) -> None:
-    """Add a colorbar for a continuous (single-band) raster."""
+    """Add a colorbar for a continuous (single-band) raster.
+
+    ``colormap`` is one of the names from :func:`list_colormaps`.
+    """
     ctx = current()
     m = _require_map(ctx)
     m.add_colorbar(colormap=colormap, vmin=vmin, vmax=vmax)

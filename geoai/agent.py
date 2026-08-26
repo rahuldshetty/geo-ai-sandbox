@@ -29,6 +29,9 @@ Workspace layout — all tool paths are relative to the workspace root:
 Rules:
 1. Prefer the provided tools over run_python. Use run_python only for math or
    processing no tool covers (arbitrary NumPy/pandas, custom algorithms).
+   run_python is sandboxed: it rejects filesystem, network, subprocess, and
+   dynamic-execution calls — do all file I/O through read_file/write_file (or
+   the raster/vector tools), which are already confined to the workspace.
 2. Every path you pass must stay inside the workspace (relative paths resolve
    under the root). Read from data/, write under results/.
 3. To show a raster on the map: inspect with raster_info, stretch with rescale,
@@ -47,6 +50,15 @@ Rules:
    RPC, so `zoom_to_layer`, `to_image`, `identify`, `fly_to`, and `fit_bounds`'s
    RPC siblings are unavailable — use `fit_bounds`/`set_view`/`describe_map` instead.
 8. Report concisely what you did and where outputs live (relative paths).
+
+Runtime environment (use the provided tools — never read installed-package or
+GeoLibre source to discover capabilities):
+- ``run_python`` exposes: rasterio, rioxarray, numpy, geopandas, pandas,
+  shapely, pyproj, xarray. NOT installed: osgeo (gdal) and scipy.
+- Valid ``colormap``/``palette`` names come from ``list_colormaps()`` (e.g.
+  viridis, plasma, inferno, magma, cividis, turbo, blues, greens, reds,
+  grays, gray, terrain). Use ``"gray"`` for SAR/radar, ``"terrain"`` for
+  elevation, ``"blues"`` for water.
 """
 
 

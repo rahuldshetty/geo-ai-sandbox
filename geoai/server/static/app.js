@@ -572,28 +572,19 @@ function usageTitle(u) {
 }
 
 function renderTraceSteps(trace) {
+  const steps = trace || [];
   const nodes = [];
-  let textBuf = null;
-  const flush = () => {
-    if (textBuf !== null) {
-      nodes.push(el("div", { class: "trace-step trace-text", text: textBuf }));
-      textBuf = null;
-    }
-  };
-  for (const step of trace || []) {
-    if (step.type === "text") {
-      flush();
-      textBuf = step.content || "";
-    } else if (step.type === "text_delta") {
-      if (textBuf === null) textBuf = "";
-      textBuf += step.content || "";
-    } else {
-      flush();
-      const node = traceStepNode(step);
-      if (node) nodes.push(node);
+  const plan = planFromTrace(steps);
+  if (plan) nodes.push(planNode(plan));
+  for (const group of groupTraceSteps(steps)) {
+    if (group.type === "text") {
+      nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
+    } else if (group.type === "tool") {
+      nodes.push(toolStepNode(group));
+    } else if (group.type === "usage") {
+      nodes.push(usageNode(group.usage));
     }
   }
-  flush();
   return nodes;
 }
 
@@ -657,57 +648,225 @@ function codeBlock(content) {
   return pre;
 }
 
-function collapsibleStep(cls, icon, name, preview, body) {
-  const details = el("details", { class: "trace-step " + cls });
+// -- planning ---------------------------------------------------------------
+
+function parsePlanItems(args) {
+  let obj = args;
+  if (typeof obj === "string") {
+    try {
+      obj = JSON.parse(obj);
+    } catch (_) {
+      return [];
+    }
+  }
+  if (obj && typeof obj === "object" && Array.isArray(obj.items)) return obj.items;
+  return [];
+}
+
+function planFromTrace(steps) {
+  let items = null;
+  for (const step of steps) {
+    if (step.type === "tool_call" && step.name === "write_plan") {
+      items = parsePlanItems(step.args);
+    }
+  }
+  return items && items.length ? items : null;
+}
+
+function statusOf(item) {
+  return (item && item.status) || "pending";
+}
+
+function planStatusIcon(status) {
+  if (status === "completed") return "✓";
+  if (status === "in_progress") return "●";
+  if (status === "cancelled") return "×";
+  if (status === "blocked") return "!";
+  return "○";
+}
+
+function planItemNode(item) {
+  const status = statusOf(item);
+  const li = el("li", { class: "plan-item plan-" + status });
+  li.append(el("span", { class: "plan-item-icon", text: planStatusIcon(status) }));
+  const text = status === "in_progress" && item.active_form ? item.active_form : item.content;
+  li.append(el("span", { class: "plan-item-text", text: text || item.content || "" }));
+  return li;
+}
+
+function planList(items) {
+  const list = el("ol", { class: "plan-list" });
+  for (const item of items || []) list.append(planItemNode(item));
+  return list;
+}
+
+function planNode(items) {
+  const total = items.length;
+  const done = items.filter((i) => {
+    const s = statusOf(i);
+    return s === "completed" || s === "cancelled";
+  }).length;
+  const details = el("details", { class: "trace-step trace-plan", open: true });
   const summary = el("summary", {});
   summary.append(
-    el("span", { class: "trace-icon", text: icon }),
-    el("span", { class: "trace-name", text: name || "" })
+    el("span", { class: "trace-icon", text: "☑" }),
+    el("span", { class: "trace-name", text: "Plan" })
   );
-  if (preview) {
-    summary.append(el("span", { class: "trace-preview", text: preview }));
-  }
+  summary.append(el("span", { class: "trace-preview", text: done + "/" + total + " done" }));
   details.append(summary);
-  details.append(el("div", { class: "trace-body" }, [body]));
+  const body = el("div", { class: "trace-body" });
+  const bar = el("div", { class: "plan-progress" });
+  const fill = el("div", { class: "plan-progress-fill" });
+  fill.style.width = (total ? Math.round((done / total) * 100) : 0) + "%";
+  bar.append(fill);
+  body.append(bar);
+  body.append(planList(items));
+  details.append(body);
   return details;
 }
 
-function toolCallNode(step) {
-  const name = step.name || "";
-  if (isCodeTool(name)) {
-    const code = extractCode(step.args);
-    return collapsibleStep(
-      "tool-call",
-      "→",
-      name,
-      compactPreview(code),
-      codeBlock(code)
-    );
-  }
-  return collapsibleStep(
-    "tool-call",
-    "→",
-    name,
-    compactPreview(step.args),
-    codeBlock(prettyValue(step.args))
+function usageNode(usage) {
+  const node = el("div", { class: "trace-step trace-usage" });
+  node.append(
+    el("span", { class: "trace-icon", text: "Σ" }),
+    el("span", { class: "trace-name", text: "Usage" })
   );
+  const u = usage || {};
+  node.append(el("span", { class: "trace-preview", text: usageLabel(u), title: usageTitle(u) }));
+  return node;
+}
+
+function toolPreview(name, call, result, isCode) {
+  if (name === "write_plan" && call) {
+    const items = parsePlanItems(call.args);
+    const done = items.filter((i) => {
+      const s = statusOf(i);
+      return s === "completed" || s === "cancelled";
+    }).length;
+    const active = items.filter((i) => statusOf(i) === "in_progress").length;
+    return items.length + " steps · " + done + " done" + (active ? " · " + active + " active" : "");
+  }
+  if (call) return compactPreview(isCode ? extractCode(call.args) : call.args);
+  if (result) return compactPreview(result.content);
+  return "";
+}
+
+function toolStepNode(group) {
+  const call = group.call;
+  const result = group.result;
+  const name = (call && call.name) || (result && result.name) || "";
+  const isCode = isCodeTool(name);
+  const details = el("details", {
+    class: "trace-step tool-call" + (result ? "" : " pending"),
+  });
+  const summary = el("summary", {});
+  summary.append(
+    el("span", { class: "trace-icon", text: "→" }),
+    el("span", { class: "trace-name", text: name || "" })
+  );
+  const preview = toolPreview(name, call, result, isCode);
+  if (preview) summary.append(el("span", { class: "trace-preview", text: preview }));
+  details.append(summary);
+  const body = el("div", { class: "trace-body" });
+  if (call) {
+    body.append(el("div", { class: "trace-io-label", text: "Input" }));
+    body.append(codeBlock(isCode ? extractCode(call.args) : prettyValue(call.args)));
+  }
+  if (result) {
+    body.append(el("div", { class: "trace-io-label", text: "Output" }));
+    body.append(codeBlock(prettyValue(result.content)));
+  }
+  details.append(body);
+  return details;
 }
 
 function toolResultNode(step) {
   const name = step.name || "";
-  return collapsibleStep(
-    "tool-result",
-    "←",
-    name,
-    compactPreview(step.content),
-    codeBlock(prettyValue(step.content))
+  const details = el("details", { class: "trace-step tool-result" });
+  const summary = el("summary", {});
+  summary.append(
+    el("span", { class: "trace-icon", text: "←" }),
+    el("span", { class: "trace-name", text: name || "" })
   );
+  summary.append(el("span", { class: "trace-preview", text: compactPreview(step.content) }));
+  details.append(summary);
+  const body = el("div", { class: "trace-body" });
+  body.append(codeBlock(prettyValue(step.content)));
+  details.append(body);
+  return details;
 }
 
-function traceStepNode(step) {
-  if (step.type === "tool_call") return toolCallNode(step);
-  if (step.type === "tool_result") return toolResultNode(step);
-  return null;
+function groupTraceSteps(trace) {
+  const steps = trace || [];
+  const groups = [];
+  let textBuf = null;
+  const flush = () => {
+    if (textBuf !== null) {
+      groups.push({ type: "text", content: textBuf });
+      textBuf = null;
+    }
+  };
+  const pending = new Map();
+  let fallbackSeq = 0;
+
+  for (const step of steps) {
+    if (step.type === "text") {
+      flush();
+      textBuf = step.content || "";
+    } else if (step.type === "text_delta") {
+      if (textBuf === null) textBuf = "";
+      textBuf += step.content || "";
+    } else if (step.type === "tool_call") {
+      flush();
+      const group = { type: "tool", call: step, result: null };
+      groups.push(group);
+      pending.set(step.tool_call_id || "seq:" + fallbackSeq++, group);
+    } else if (step.type === "tool_result") {
+      flush();
+      let group = null;
+      if (step.tool_call_id && pending.has(step.tool_call_id)) {
+        group = pending.get(step.tool_call_id);
+        pending.delete(step.tool_call_id);
+      } else {
+        for (const [key, p] of pending) {
+          if ((p.call && p.call.name) === (step.name || "")) {
+            group = p;
+            pending.delete(key);
+            break;
+          }
+        }
+      }
+      if (group) {
+        group.result = step;
+      } else {
+        groups.push({ type: "tool", call: null, result: step });
+      }
+    } else if (step.type === "usage") {
+      flush();
+      groups.push({ type: "usage", usage: step.usage });
+    } else {
+      flush();
+    }
+  }
+  flush();
+  return groups;
+}
+
+function attachToolResult(node, result) {
+  node.classList.remove("pending");
+  const body = node.querySelector(".trace-body");
+  if (body) {
+    body.append(el("div", { class: "trace-io-label", text: "Output" }));
+    body.append(codeBlock(prettyValue(result.content)));
+  }
+}
+
+function updatePlanNode(container, items) {
+  if (!items || !items.length) return;
+  const node = planNode(items);
+  const existing = container.querySelector(".trace-plan");
+  if (existing) existing.replaceWith(node);
+  else container.prepend(node);
 }
 
 function appendTraceStep(container, step) {
@@ -721,9 +880,34 @@ function appendTraceStep(container, step) {
     container.append(el("div", { class: "trace-step trace-text", text: step.content || "" }));
   } else if (step.type === "text") {
     container.append(el("div", { class: "trace-step trace-text", text: step.content || "" }));
-  } else {
-    const node = traceStepNode(step);
-    if (node) container.append(node);
+  } else if (step.type === "tool_call") {
+    const node = toolStepNode({ call: step, result: null });
+    container.append(node);
+    const pending = (container._pending || (container._pending = new Map()));
+    pending.set(step.tool_call_id || "seq:" + pending.size, { node, step });
+    if (step.name === "write_plan") updatePlanNode(container, parsePlanItems(step.args));
+  } else if (step.type === "tool_result") {
+    const pending = (container._pending || (container._pending = new Map()));
+    let entry = null;
+    if (step.tool_call_id && pending.has(step.tool_call_id)) {
+      entry = pending.get(step.tool_call_id);
+      pending.delete(step.tool_call_id);
+    } else {
+      for (const [key, p] of pending) {
+        if ((p.step.name || "") === (step.name || "")) {
+          entry = p;
+          pending.delete(key);
+          break;
+        }
+      }
+    }
+    if (entry) {
+      attachToolResult(entry.node, step);
+    } else {
+      container.append(toolResultNode(step));
+    }
+  } else if (step.type === "usage") {
+    container.append(usageNode(step.usage));
   }
   container.scrollTop = container.scrollHeight;
 }

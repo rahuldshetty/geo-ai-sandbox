@@ -63,13 +63,19 @@ def _event_to_step(event: object) -> dict | None:
     ek = getattr(event, "event_kind", None)
     if ek == "function_tool_call":
         part = event.part
-        return {"type": "tool_call", "name": part.tool_name, "args": _json_safe(part.args)}
+        return {
+            "type": "tool_call",
+            "name": part.tool_name,
+            "args": _json_safe(part.args),
+            "tool_call_id": part.tool_call_id,
+        }
     if ek == "function_tool_result":
         part = event.part
         return {
             "type": "tool_result",
             "name": getattr(part, "tool_name", None),
             "content": _json_safe(getattr(part, "content", None)),
+            "tool_call_id": event.tool_call_id,
         }
     if ek == "part_start":
         p = event.part
@@ -475,7 +481,11 @@ class AppState:
         )
 
         usage = trace.usage_to_dict(result.usage)
+        usage_step = {"type": "usage", "usage": usage}
+        on_trace(usage_step)
+        self.broadcast("trace", {"id": cell_id, "step": usage_step})
         if trace_path is not None:
+            trace.append_step(trace_path, usage_step)
             trace.append_messages(trace_path, result.new_messages())
             trace.append_result(
                 trace_path,

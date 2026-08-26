@@ -13,6 +13,7 @@ from .map_tools import (
     describe_map,
     export_html,
     fit_bounds,
+    list_colormaps,
     remove_layer,
     save_map,
     set_basemap,
@@ -54,6 +55,7 @@ from .workspace_tools import (
 ALL_TOOLS = [
     # map
     describe_map,
+    list_colormaps,
     add_geojson,
     add_vector,
     add_raster,

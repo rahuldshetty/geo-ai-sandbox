@@ -654,6 +654,99 @@ button {
   color: var(--text);
   white-space: pre-wrap;
 }
+.trace-step.trace-plan {
+  border-left: 3px solid var(--warn);
+}
+
+.trace-step.pending > summary::after {
+  content: "";
+  margin-left: auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--primary-soft);
+  border-top-color: var(--primary);
+  animation: trace-spin 0.8s linear infinite;
+}
+
+@keyframes trace-spin {
+  to { transform: rotate(360deg); }
+}
+
+.trace-io-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 2px 0 4px;
+}
+
+.trace-io-label:not(:first-child) {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.trace-step.trace-usage {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--success);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  font-size: 12px;
+}
+
+.plan-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  background: var(--success);
+  transition: width 0.2s ease;
+}
+
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.plan-item-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.plan-item.plan-completed .plan-item-icon { color: var(--success); }
+.plan-item.plan-completed .plan-item-text { color: var(--text-3); text-decoration: line-through; }
+.plan-item.plan-in_progress .plan-item-icon { color: var(--warn); }
+.plan-item.plan-in_progress .plan-item-text { color: var(--text); font-weight: 600; }
+.plan-item.plan-cancelled .plan-item-icon { color: var(--text-3); }
+.plan-item.plan-cancelled .plan-item-text { color: var(--text-3); text-decoration: line-through; }
+.plan-item.plan-blocked .plan-item-icon { color: var(--error); }
+.plan-item.plan-blocked .plan-item-text { color: var(--text); }
+
 
 /* -- status bar ----------------------------------------------------------- */
 
