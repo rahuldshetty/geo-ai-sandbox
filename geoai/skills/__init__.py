@@ -22,6 +22,7 @@ from .map_tools import (
     set_view,
     style_layer,
 )
+from .python_help import python_help
 from .python_tools import run_python
 from .raster_tools import (
     band_math,
@@ -97,8 +98,8 @@ ALL_TOOLS = [
     read_file,
     write_file,
     download,
-    import_data,
     # python
+    python_help,
     run_python,
 ]
 

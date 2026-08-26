@@ -32,6 +32,9 @@ Rules:
    run_python is sandboxed: it rejects filesystem, network, subprocess, and
    dynamic-execution calls — do all file I/O through read_file/write_file (or
    the raster/vector tools), which are already confined to the workspace.
+   To look up an API signature/docstring/members, call python_help (e.g.
+   python_help("rasterio.warp.reproject") or python_help("ws")) — never probe
+   with dir()/__doc__/inspect inside run_python.
 2. Every path you pass must stay inside the workspace (relative paths resolve
    under the root). Read from data/, write under results/.
 3. To show a raster on the map: inspect with raster_info, stretch with rescale,
