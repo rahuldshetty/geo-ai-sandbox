@@ -60,17 +60,6 @@ def write_run(
     )
 
 
-def estimate_tokens(messages: list[ModelMessage]) -> int:
-    """Rough token estimate for retention trimming (~4 chars/token)."""
-    total = 0
-    for msg in messages:
-        try:
-            total += len(json.dumps(to_jsonable_python([msg]))) // 4
-        except Exception:  # noqa: BLE001 - a rough estimate should never raise
-            total += 256
-    return total
-
-
 def append_step(path: Path, step: dict[str, Any]) -> None:
     """Append one UI trace step (already JSON-safe)."""
     _append(path, {"type": "step", "step": step})
@@ -107,14 +96,21 @@ def append_messages(path: Path, messages: list[ModelMessage]) -> None:
 
 def usage_to_dict(usage: Any) -> dict[str, Any]:
     """Flatten a ``RunUsage`` into a JSON-serializable dict."""
+    details = getattr(usage, "details", None) or {}
+    cache_read = int(getattr(usage, "cache_read_tokens", 0) or 0)
+    cache_write = int(getattr(usage, "cache_write_tokens", 0) or 0)
+    if not cache_read:
+        cache_read = int(details.get("prompt_cache_hit_tokens", 0) or 0)
+    if not cache_write:
+        cache_write = int(details.get("prompt_cache_miss_tokens", 0) or 0)
     return {
         "requests": int(getattr(usage, "requests", 0) or 0),
         "input_tokens": int(getattr(usage, "input_tokens", 0) or 0),
         "output_tokens": int(getattr(usage, "output_tokens", 0) or 0),
         "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
         "tool_calls": int(getattr(usage, "tool_calls", 0) or 0),
-        "cache_read_tokens": int(getattr(usage, "cache_read_tokens", 0) or 0),
-        "cache_write_tokens": int(getattr(usage, "cache_write_tokens", 0) or 0),
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
         "cost": _cost(usage),
     }
 

@@ -17,19 +17,16 @@ def model_from_env() -> str:
     return os.getenv("GEOAI_MODEL", DEFAULT_MODEL)
 
 
-def max_history_tokens() -> int:
-    """Return the conversation history token budget.
+def keep_messages() -> int:
+    """Return how many recent prior messages to replay into a new prompt cell.
 
-    ``GEOAI_MAX_HISTORY_TOKENS`` (default 32000) bounds both the prior
-    prompt-cell history replayed into a new cell and the in-run compaction
-    target (``TieredCompaction``). ``0`` disables the cross-cell pre-filter.
-    Invalid values fall back to the default.
+    ``GEOAI_KEEP_MESSAGES`` (default 24). ``0`` disables cross-cell replay.
     """
-    raw = os.getenv("GEOAI_MAX_HISTORY_TOKENS", "32000").strip()
+    raw = os.getenv("GEOAI_KEEP_MESSAGES", "24").strip()
     try:
         value = int(raw)
     except ValueError:
-        value = 32000
+        value = 24
     return max(0, value)
 
 

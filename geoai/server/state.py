@@ -28,7 +28,7 @@ from ..config import list_workspaces, load_env, workspace_root
 from ..context import GeoContext, set_context
 from ..map_view import persist_map
 from ..settings import load_settings, save_settings
-from ..skills.python_tools import run_python
+from ..skills.python_tools import get_last_output_text, run_python, set_dangerous_mode
 from ..skills.workspace_tools import download
 from ..workspace import Workspace
 from .notebook import new_cell, read_nb, write_nb
@@ -119,6 +119,7 @@ class AppState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.settings = load_settings()
+        set_dangerous_mode(self.settings.get("dangerous_mode", False))
         self.model = self.settings["model"]
         self.map = Map(
             center=(0, 0), zoom=2, height="100%", layout="embed", theme="light"
@@ -152,7 +153,7 @@ class AppState:
                 )
             ctx = GeoContext(map=self.map, workspace=ws, version=None)
             set_context(ctx)
-            build_agent(ctx, self.model, self.settings["max_history_tokens"])
+            build_agent(ctx, self.model)
             self.active_name = name
             self.workspace = ws
 
@@ -181,13 +182,13 @@ class AppState:
     def update_settings(self, patch: dict) -> dict:
         """Merge ``patch`` into settings, persist, and rebuild the agent on change.
 
-        Model and token-budget changes require a rebuilt agent (the compaction
-        target is baked in at construction); theme changes do not. A rebuild
+        Model changes require a rebuilt agent; theme and message-retention
+        changes do not (``keep_messages`` is read at run time). A rebuild
         failure (e.g. an invalid model string) rolls back and raises.
         """
         with self.lock:
             old_model = self.settings.get("model")
-            old_budget = self.settings.get("max_history_tokens", 32000)
+            old_keep = self.settings.get("keep_messages", 24)
             rebuild = False
             if "model" in patch and patch["model"]:
                 new_model = patch["model"].strip()
@@ -195,28 +196,25 @@ class AppState:
                     self.settings["model"] = new_model
                     self.model = new_model
                     rebuild = True
-            if "max_history_tokens" in patch and patch["max_history_tokens"] is not None:
-                try:
-                    budget = max(0, int(patch["max_history_tokens"]))
-                except (TypeError, ValueError):
-                    budget = old_budget
-                if budget != old_budget:
-                    self.settings["max_history_tokens"] = budget
-                    rebuild = True
+            if "keep_messages" in patch and patch["keep_messages"] is not None:
+                self.settings["keep_messages"] = max(0, int(patch["keep_messages"]))
             if "theme" in patch and patch["theme"] in ("light", "dark"):
                 self.settings["theme"] = patch["theme"]
+            if "dangerous_mode" in patch and patch["dangerous_mode"] is not None:
+                self.settings["dangerous_mode"] = bool(patch["dangerous_mode"])
             try:
                 self.settings = save_settings(self.settings)
                 if rebuild and self.workspace is not None:
                     ctx = GeoContext(map=self.map, workspace=self.workspace, version=None)
                     set_context(ctx)
-                    build_agent(ctx, self.model, self.settings["max_history_tokens"])
+                    build_agent(ctx, self.model)
             except Exception as exc:  # noqa: BLE001 - roll back and surface
                 self.settings["model"] = old_model
-                self.settings["max_history_tokens"] = old_budget
+                self.settings["keep_messages"] = old_keep
                 self.model = old_model
                 self.settings = save_settings(self.settings)
                 raise ValueError(f"could not apply settings: {exc}") from exc
+            set_dangerous_mode(self.settings.get("dangerous_mode", False))
             return dict(self.settings)
 
     # -- traces ------------------------------------------------------------
@@ -263,7 +261,7 @@ class AppState:
             )
 
     def _history_for(self, cell_id: str) -> "list | None":
-        """Gather prior prompt cells' messages as ``message_history``."""
+        """Return the bounded recent window of prior prompt cells' messages."""
         if self.workspace is None:
             return None
         messages = []
@@ -277,18 +275,10 @@ class AppState:
             )
         if not messages:
             return None
-        return self._trim_history(messages)
-
-    def _trim_history(self, messages: list) -> list:
-        budget = self.settings.get("max_history_tokens", 32000)
-        if budget <= 0 or len(messages) <= 1:
-            return messages
-        # Drop oldest turns but keep the head message (it carries the system
-        # prompt and the dynamic data-context part). Pydantic-ai repairs any
-        # tool-call/tool-return pairing broken by trimming.
-        while len(messages) > 1 and trace.estimate_tokens(messages) > budget:
-            messages.pop(1)
-        return messages
+        keep = self.settings.get("keep_messages", 24)
+        if keep <= 0:
+            return None
+        return messages[-keep:]
 
     # -- cell ops ----------------------------------------------------------
 
@@ -365,7 +355,8 @@ class AppState:
 
         if kind == "python":
             try:
-                output = run_python(source)
+                run_python(source)
+                output = get_last_output_text()
             except Exception as exc:  # noqa: BLE001 - surface failures in the cell output
                 output = "ERROR: " + str(exc)
             cell["trace"] = []
@@ -472,6 +463,7 @@ class AppState:
                     self.broadcast("trace", {"id": cell_id, "step": step})
 
         history = self._history_for(cell_id)
+        source = self._augment_source(source)
         result = await agent.run(
             source,
             event_stream_handler=on_events,
@@ -552,6 +544,20 @@ class AppState:
     def list_files(self) -> list[str]:
         with self.lock:
             return self.workspace.list_files() if self.workspace else []
+
+    def _augment_source(self, source: str) -> str:
+        """Prepend the ``data/`` listing to the current user turn."""
+        if self.workspace is None:
+            return source
+        files = self.workspace.list_files("data")
+        if not files:
+            return source
+        listing = "\n".join(f"- {f}" for f in files)
+        context = (
+            "Files currently available in the workspace data/ folder "
+            "(imported inputs the user may refer to):\n" + listing
+        )
+        return context + "\n\n" + source
 
     def set_map_project(self, project: dict) -> None:
         with self.lock:

@@ -10,7 +10,7 @@ const state = {
   map_app_url: null,
   files: [],
   selected_tab: "Cells",
-  settings: { model: "", max_history_tokens: 32000, theme: "light" },
+  settings: { model: "", keep_messages: 24, theme: "light", dangerous_mode: false },
 };
 
 // -- map bridge state ------------------------------------------------------
@@ -191,7 +191,7 @@ function applySnapshot(snap) {
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
-  state.settings = snap.settings || { model: "", max_history_tokens: 32000, theme: "light" };
+  state.settings = snap.settings || { model: "", keep_messages: 24, theme: "light", dangerous_mode: false };
   applyTheme();
 }
 
@@ -333,15 +333,54 @@ function renderMenubar() {
   cellMenu.append(cellBtn, cellItems);
 
   bar.append(fileMenu, cellMenu);
+  const right = el("div", { class: "menubar-right" });
   if (state.active_workspace) {
-    bar.append(el("div", { id: "ws-chip", text: state.active_workspace }));
+    right.append(el("div", { id: "ws-chip", text: state.active_workspace }));
   }
+  right.append(dangerToggle());
+  bar.append(right);
   return bar;
 }
 
 function menuItem(label, onclick) {
   return el("button", { text: label, onclick });
 }
+
+const ICON_SAFE =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>';
+
+const ICON_DANGER =
+  '<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="none">' +
+  '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>';
+
+function dangerToggle() {
+  const on = !!(state.settings && state.settings.dangerous_mode);
+  const btn = el("button", {
+    id: "danger-toggle",
+    class: "danger-toggle" + (on ? " on" : ""),
+    title: on
+      ? "Dangerous mode ON — run_python may execute arbitrary commands"
+      : "Dangerous mode OFF — run_python is sandboxed",
+    "aria-pressed": String(on),
+    onclick: () => toggleDangerous(!on),
+  });
+  btn.innerHTML = on ? ICON_DANGER : ICON_SAFE;
+  return btn;
+}
+
+async function toggleDangerous(next) {
+  try {
+    const settings = await api("PUT", "/api/settings", { dangerous_mode: next });
+    state.settings = settings;
+    render();
+    toast(next ? "Dangerous mode enabled" : "Dangerous mode disabled");
+  } catch (e) {
+    toast(e.message || String(e));
+  }
+}
+
 
 function toggleMenu(menu) {
   const wasOpen = menu.classList.contains("open");
@@ -1208,11 +1247,11 @@ function openSettingsDialog() {
       value: state.settings.model || "",
       placeholder: "openai:gpt-4o",
     });
-    const budgetInput = el("input", {
+    const keepInput = el("input", {
       type: "number",
       min: "0",
-      step: "1000",
-      value: state.settings.max_history_tokens != null ? state.settings.max_history_tokens : 32000,
+      step: "1",
+      value: state.settings.keep_messages != null ? state.settings.keep_messages : 24,
     });
     const themeSelect = el("select", {});
     themeSelect.append(
@@ -1223,7 +1262,7 @@ function openSettingsDialog() {
 
     dialog.append(
       row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
-      row("History budget (tokens)", "context retained across prompt cells before compaction", budgetInput),
+      row("Recent messages to keep", "prior prompt-cell messages replayed into a new cell", keepInput),
       row("Theme", "app shell appearance", themeSelect)
     );
 
@@ -1231,7 +1270,7 @@ function openSettingsDialog() {
       try {
         const settings = await api("PUT", "/api/settings", {
           model: modelInput.value.trim(),
-          max_history_tokens: Number(budgetInput.value) || 0,
+          keep_messages: Number(keepInput.value) || 0,
           theme: themeSelect.value,
         });
         state.settings = settings;
@@ -1247,7 +1286,7 @@ function openSettingsDialog() {
 }
 
 function aggregateUsage() {
-  let input = 0, output = 0, requests = 0, toolCalls = 0, cost = 0, has = false;
+  let input = 0, output = 0, requests = 0, toolCalls = 0, cost = 0, cacheRead = 0, has = false;
   for (const c of state.cells || []) {
     const u = c.usage;
     if (!u) continue;
@@ -1257,8 +1296,9 @@ function aggregateUsage() {
     requests += u.requests || 0;
     toolCalls += u.tool_calls || 0;
     if (u.cost != null) cost += Number(u.cost) || 0;
+    cacheRead += u.cache_read_tokens || 0;
   }
-  return { input, output, requests, toolCalls, cost, has };
+  return { input, output, requests, toolCalls, cost, cacheRead, has };
 }
 
 function renderStatusBar() {
@@ -1275,6 +1315,8 @@ function renderStatusBar() {
     );
     const cost = formatCost(u.cost);
     if (cost) stats.append(el("span", { class: "stat cost", text: cost }));
+    const ratio = u.input ? Math.round((u.cacheRead / u.input) * 100) : 0;
+    stats.append(el("span", { class: "stat", title: "Prompt cache hit ratio (DeepSeek)", text: ratio + "% cached" }));
     bar.append(stats);
   }
   return bar;

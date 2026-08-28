@@ -23,7 +23,7 @@ from .map_tools import (
     style_layer,
 )
 from .python_help import python_help
-from .python_tools import run_python
+from .python_tools import inspect_output, query_output, run_python
 from .raster_tools import (
     band_math,
     clip,
@@ -101,6 +101,8 @@ ALL_TOOLS = [
     # python
     python_help,
     run_python,
+    inspect_output,
+    query_output,
 ]
 
 __all__ = ["ALL_TOOLS"]

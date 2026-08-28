@@ -210,8 +210,15 @@ button {
   margin: 5px 4px;
 }
 
-#ws-chip {
+.menubar-right {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+#ws-chip {
   font-size: 12px;
   color: var(--primary);
   background: var(--primary-soft);
@@ -223,6 +230,37 @@ button {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 40%;
+}
+
+.danger-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.danger-toggle:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.danger-toggle.on {
+  color: var(--error);
+  border-color: var(--error);
+  background: var(--error-soft);
+}
+
+.danger-toggle.on:hover {
+  background: var(--error-soft);
+  color: var(--error);
 }
 
 /* -- panels --------------------------------------------------------------- */
