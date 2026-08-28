@@ -11,8 +11,10 @@ from typing import Any
 from geolibre import Map
 
 from ..context import GeoContext, current
+from ..workspace import Workspace, WorkspaceError
 
 _SNAPSHOT = "current.geolibre.json"
+_LOCAL_SOURCE_KEY = "geoaiSourcePath"
 
 
 def _require_map(ctx: GeoContext) -> Map:
@@ -24,6 +26,43 @@ def _require_map(ctx: GeoContext) -> Map:
 def _persist(ctx: GeoContext, m: Map) -> None:
     m.save_project(str(ctx.workspace.maps / _SNAPSHOT))
     ctx.workspace.bump()
+
+
+def _tag_local_source(m: Map, layer_id: str, rel: str) -> None:
+    """Record the workspace-relative path of a locally-served raster layer."""
+    for layer in m.project.get("layers", []):
+        if layer.get("id") == layer_id:
+            layer.setdefault("metadata", {})[_LOCAL_SOURCE_KEY] = rel
+            return
+
+
+def repoint_local_rasters(m: Map, ws: Workspace) -> int:
+    """Re-register local raster files and re-point their session URLs.
+
+    ``add_raster`` resolves a workspace-relative path to a URL on the geolibre
+    static server, which binds a random port and a per-process token. Those URLs
+    are not durable across a server restart, so on load we re-register each file
+    and rewrite the layer source to the fresh session URL (the original path is
+    kept in ``metadata.geoaiSourcePath``). Returns the number of layers re-pointed.
+    """
+    from geolibre._server import register_local_file
+
+    count = 0
+    for layer in m.project.get("layers", []):
+        rel = (layer.get("metadata") or {}).get(_LOCAL_SOURCE_KEY)
+        if not rel:
+            continue
+        try:
+            abs_path = ws.resolve(rel, must_exist=True)
+        except WorkspaceError:
+            continue
+        url = register_local_file(str(abs_path))
+        source = layer.get("source")
+        if isinstance(source, dict):
+            source["url"] = url
+        layer["sourcePath"] = url
+        count += 1
+    return count
 
 
 def _is_url(s: str) -> bool:
@@ -103,10 +142,14 @@ def add_raster(
     """
     ctx = current()
     m = _require_map(ctx)
+    rel = None
     if not _is_url(path):
+        rel = path
         path = str(ctx.workspace.resolve(path, must_exist=True))
     rescale_arg = [list(rescale)] if rescale else None
     layer_id = m.add_raster(path, name, colormap=colormap, rescale=rescale_arg)
+    if rel is not None:
+        _tag_local_source(m, layer_id, rel)
     _persist(ctx, m)
     return layer_id
 

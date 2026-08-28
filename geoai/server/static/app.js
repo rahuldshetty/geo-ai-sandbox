@@ -705,11 +705,37 @@ function parsePlanItems(args) {
 function planFromTrace(steps) {
   let items = null;
   for (const step of steps) {
-    if (step.type === "tool_call" && step.name === "write_plan") {
+    if (step.type !== "tool_call") continue;
+    if (step.name === "write_plan") {
       items = parsePlanItems(step.args);
+    } else if (step.name === "update_task_status" || step.name === "update_task_statuses") {
+      items = applyPlanStatus(items, step.args);
     }
   }
   return items && items.length ? items : null;
+}
+
+function applyPlanStatus(items, args) {
+  if (!items) return items;
+  let obj = args;
+  if (typeof obj === "string") {
+    try {
+      obj = JSON.parse(obj);
+    } catch (_) {
+      return items;
+    }
+  }
+  if (!obj || typeof obj !== "object") return items;
+  const updates = Array.isArray(obj.updates) ? obj.updates : [obj];
+  for (const u of updates) {
+    if (!u || typeof u !== "object") continue;
+    const id = u.task_id;
+    const status = u.status;
+    if (!id || !status) continue;
+    const item = items.find((it) => it.id === id);
+    if (item) item.status = status;
+  }
+  return items;
 }
 
 function statusOf(item) {

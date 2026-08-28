@@ -31,6 +31,7 @@ from ..settings import load_settings, save_settings
 from ..skills.python_tools import get_last_output_text, run_python, set_dangerous_mode
 from ..skills.workspace_tools import download
 from ..workspace import Workspace
+from ..skills.map_tools import repoint_local_rasters
 from .notebook import new_cell, read_nb, write_nb
 
 _SNAPSHOT = "current.geolibre.json"
@@ -151,6 +152,11 @@ class AppState:
                 self.map.load_project(
                     _project.build_empty_project(center=(0, 0), zoom=2)
                 )
+            # Local raster layers are persisted with session-local URLs (the
+            # geolibre static server binds a random port and a per-process token).
+            # Re-register the files and re-point the layers so the in-iframe app
+            # can fetch them again after a server restart.
+            repoint_local_rasters(self.map, ws)
             ctx = GeoContext(map=self.map, workspace=ws, version=None)
             set_context(ctx)
             build_agent(ctx, self.model)
