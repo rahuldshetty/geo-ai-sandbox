@@ -58,7 +58,6 @@ class MapProject(BaseModel):
 
 class UpdateSettings(BaseModel):
     model: str | None = None
-    keep_messages: int | None = None
     theme: str | None = None
     dangerous_mode: bool | None = None
 

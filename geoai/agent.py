@@ -14,7 +14,7 @@ from pydantic_ai_harness import (
 )
 
 from .context import GeoContext, set_context
-from .plan_store import JsonPlanStore
+from pydantic_ai_harness.planning import InMemoryPlanStore
 from .skills import ALL_TOOLS
 
 SYSTEM_PROMPT = """You are GeoAI, a geospatial-analysis agent in a Geo-AI web workspace.
@@ -71,6 +71,7 @@ GeoLibre source to discover capabilities):
 
 
 _agent: "Agent | None" = None
+_plan_store: "InMemoryPlanStore | None" = None
 def resolve_model(model: str):
     """Resolve a model string to a ``Model`` instance, honoring a custom endpoint.
 
@@ -102,15 +103,15 @@ def build_agent(ctx: GeoContext, model: str) -> Agent:
     shared live map and workspace are always reachable. The built agent is also
     stored so callbacks can reach the latest instance without a stale closure.
     """
-    global _agent
+    global _agent, _plan_store
     set_context(ctx)
-    plan_store = JsonPlanStore(str(ctx.workspace.root / "plan.json"), session="default")
+    _plan_store = InMemoryPlanStore()
     agent = Agent(
         resolve_model(model),
         system_prompt=SYSTEM_PROMPT,
         capabilities=[
             ReinjectSystemPrompt(),
-            Planning(store=plan_store),
+            Planning(store=_plan_store),
             TieredCompaction(
                 tiers=[
                     ClearToolResults(max_tokens=1, keep_pairs=3),
@@ -132,3 +133,8 @@ def current_agent() -> Agent:
     if _agent is None:
         raise RuntimeError("agent not built; call build_agent(ctx, model) first")
     return _agent
+
+
+def current_plan_store() -> "InMemoryPlanStore | None":
+    """Return the most recently built agent's plan store, if any."""
+    return _plan_store

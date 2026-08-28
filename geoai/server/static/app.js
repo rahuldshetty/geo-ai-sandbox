@@ -10,7 +10,7 @@ const state = {
   map_app_url: null,
   files: [],
   selected_tab: "Cells",
-  settings: { model: "", keep_messages: 24, theme: "light", dangerous_mode: false },
+  settings: { model: "", theme: "light", dangerous_mode: false },
 };
 
 // -- map bridge state ------------------------------------------------------
@@ -19,6 +19,7 @@ let mapIframe = null;
 let mapReady = false;
 let lastRemoteProject = null;
 let mapSeq = 0;
+let iframeWorkspace = null;
 
 // -- DOM references --------------------------------------------------------
 
@@ -191,7 +192,7 @@ function applySnapshot(snap) {
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
-  state.settings = snap.settings || { model: "", keep_messages: 24, theme: "light", dangerous_mode: false };
+  state.settings = snap.settings || { model: "", theme: "light", dangerous_mode: false };
   applyTheme();
 }
 
@@ -268,13 +269,21 @@ function ensureMap() {
   if (!state.map_app_url) return;
   const panel = document.getElementById("map-panel");
   if (!panel) return;
-  if (mapIframe && mapIframe.isConnected) return;
-  if (!mapIframe) {
-    mapIframe = el("iframe", {
-      src: state.map_app_url + "index.html?embed=1&theme=light&layout=embed",
-      allow: "fullscreen",
-    });
+  if (iframeWorkspace !== state.active_workspace) {
+    // Workspace switched (or first mount): rebuild the iframe so the GeoLibre
+    // app boots fresh — no stale legend/colorbar/plugin state from the prior
+    // workspace. `attachBridge` re-posts the project on `geolibre:ready`.
+    if (mapIframe && mapIframe.isConnected) mapIframe.remove();
+    mapIframe = null;
+    mapReady = false;
+    lastRemoteProject = null;
+    iframeWorkspace = state.active_workspace;
   }
+  if (mapIframe && mapIframe.isConnected) return;
+  mapIframe = el("iframe", {
+    src: state.map_app_url + "index.html?embed=1&theme=light&layout=embed",
+    allow: "fullscreen",
+  });
   panel.append(mapIframe);
 }
 
@@ -704,38 +713,10 @@ function parsePlanItems(args) {
 
 function planFromTrace(steps) {
   let items = null;
-  for (const step of steps) {
-    if (step.type !== "tool_call") continue;
-    if (step.name === "write_plan") {
-      items = parsePlanItems(step.args);
-    } else if (step.name === "update_task_status" || step.name === "update_task_statuses") {
-      items = applyPlanStatus(items, step.args);
-    }
+  for (const step of steps || []) {
+    if (step.type === "plan") items = step.items || [];
   }
   return items && items.length ? items : null;
-}
-
-function applyPlanStatus(items, args) {
-  if (!items) return items;
-  let obj = args;
-  if (typeof obj === "string") {
-    try {
-      obj = JSON.parse(obj);
-    } catch (_) {
-      return items;
-    }
-  }
-  if (!obj || typeof obj !== "object") return items;
-  const updates = Array.isArray(obj.updates) ? obj.updates : [obj];
-  for (const u of updates) {
-    if (!u || typeof u !== "object") continue;
-    const id = u.task_id;
-    const status = u.status;
-    if (!id || !status) continue;
-    const item = items.find((it) => it.id === id);
-    if (item) item.status = status;
-  }
-  return items;
 }
 
 function statusOf(item) {
@@ -927,9 +908,12 @@ function attachToolResult(node, result) {
 }
 
 function updatePlanNode(container, items) {
-  if (!items || !items.length) return;
-  const node = planNode(items);
   const existing = container.querySelector(".trace-plan");
+  if (!items || !items.length) {
+    if (existing) existing.remove();
+    return;
+  }
+  const node = planNode(items);
   if (existing) existing.replaceWith(node);
   else container.prepend(node);
 }
@@ -950,7 +934,8 @@ function appendTraceStep(container, step) {
     container.append(node);
     const pending = (container._pending || (container._pending = new Map()));
     pending.set(step.tool_call_id || "seq:" + pending.size, { node, step });
-    if (step.name === "write_plan") updatePlanNode(container, parsePlanItems(step.args));
+  } else if (step.type === "plan") {
+    updatePlanNode(container, step.items);
   } else if (step.type === "tool_result") {
     const pending = (container._pending || (container._pending = new Map()));
     let entry = null;
@@ -1273,12 +1258,6 @@ function openSettingsDialog() {
       value: state.settings.model || "",
       placeholder: "openai:gpt-4o",
     });
-    const keepInput = el("input", {
-      type: "number",
-      min: "0",
-      step: "1",
-      value: state.settings.keep_messages != null ? state.settings.keep_messages : 24,
-    });
     const themeSelect = el("select", {});
     themeSelect.append(
       el("option", { value: "light", text: "Light" }),
@@ -1288,7 +1267,6 @@ function openSettingsDialog() {
 
     dialog.append(
       row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
-      row("Recent messages to keep", "prior prompt-cell messages replayed into a new cell", keepInput),
       row("Theme", "app shell appearance", themeSelect)
     );
 
@@ -1296,7 +1274,6 @@ function openSettingsDialog() {
       try {
         const settings = await api("PUT", "/api/settings", {
           model: modelInput.value.trim(),
-          keep_messages: Number(keepInput.value) || 0,
           theme: themeSelect.value,
         });
         state.settings = settings;

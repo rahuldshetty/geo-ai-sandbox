@@ -23,7 +23,7 @@ from pydantic_ai import CancellationToken, RunCancelled
 
 
 from .. import trace
-from ..agent import build_agent, current_agent
+from ..agent import build_agent, current_agent, current_plan_store
 from ..config import list_workspaces, load_env, workspace_root
 from ..context import GeoContext, set_context
 from ..map_view import persist_map
@@ -36,6 +36,10 @@ from .notebook import new_cell, read_nb, write_nb
 
 _SNAPSHOT = "current.geolibre.json"
 _RUNNABLE_KINDS = frozenset({"python", "prompt"})
+
+_PLAN_TOOLS = frozenset(
+    {"write_plan", "add_task", "update_task_status", "update_task_statuses", "remove_task"}
+)
 
 
 def _filename_from_url(url: str) -> str:
@@ -188,13 +192,11 @@ class AppState:
     def update_settings(self, patch: dict) -> dict:
         """Merge ``patch`` into settings, persist, and rebuild the agent on change.
 
-        Model changes require a rebuilt agent; theme and message-retention
-        changes do not (``keep_messages`` is read at run time). A rebuild
-        failure (e.g. an invalid model string) rolls back and raises.
+        Model changes require a rebuilt agent; theme and dangerous-mode changes
+        do not. A rebuild failure (e.g. an invalid model string) rolls back.
         """
         with self.lock:
             old_model = self.settings.get("model")
-            old_keep = self.settings.get("keep_messages", 24)
             rebuild = False
             if "model" in patch and patch["model"]:
                 new_model = patch["model"].strip()
@@ -202,8 +204,6 @@ class AppState:
                     self.settings["model"] = new_model
                     self.model = new_model
                     rebuild = True
-            if "keep_messages" in patch and patch["keep_messages"] is not None:
-                self.settings["keep_messages"] = max(0, int(patch["keep_messages"]))
             if "theme" in patch and patch["theme"] in ("light", "dark"):
                 self.settings["theme"] = patch["theme"]
             if "dangerous_mode" in patch and patch["dangerous_mode"] is not None:
@@ -216,7 +216,6 @@ class AppState:
                     build_agent(ctx, self.model)
             except Exception as exc:  # noqa: BLE001 - roll back and surface
                 self.settings["model"] = old_model
-                self.settings["keep_messages"] = old_keep
                 self.model = old_model
                 self.settings = save_settings(self.settings)
                 raise ValueError(f"could not apply settings: {exc}") from exc
@@ -265,26 +264,6 @@ class AppState:
                 usage=usage,
                 conversation_id=conversation_id,
             )
-
-    def _history_for(self, cell_id: str) -> "list | None":
-        """Return the bounded recent window of prior prompt cells' messages."""
-        if self.workspace is None:
-            return None
-        messages = []
-        for cell in self.cells:
-            if cell["id"] == cell_id:
-                break
-            if cell.get("kind") != "prompt":
-                continue
-            messages.extend(
-                trace.read_messages(self.workspace.traces / f"{cell['id']}.jsonl")
-            )
-        if not messages:
-            return None
-        keep = self.settings.get("keep_messages", 24)
-        if keep <= 0:
-            return None
-        return messages[-keep:]
 
     # -- cell ops ----------------------------------------------------------
 
@@ -459,6 +438,10 @@ class AppState:
                 prompt=source,
             )
 
+        plan_store = current_plan_store()
+        if plan_store is not None:
+            await plan_store.set_items([])
+
         async def on_events(ctx, events):  # noqa: ARG001 - ctx unused
             async for event in events:
                 step = _event_to_step(event)
@@ -467,14 +450,23 @@ class AppState:
                     if trace_path is not None:
                         trace.append_step(trace_path, step)
                     self.broadcast("trace", {"id": cell_id, "step": step})
+                if (
+                    plan_store is not None
+                    and getattr(event, "event_kind", None) == "function_tool_result"
+                    and getattr(getattr(event, "part", None), "tool_name", None) in _PLAN_TOOLS
+                ):
+                    items = [i.model_dump(mode="json") for i in await plan_store.get_items()]
+                    plan_step = {"type": "plan", "items": items}
+                    on_trace(plan_step)
+                    if trace_path is not None:
+                        trace.append_step(trace_path, plan_step)
+                    self.broadcast("trace", {"id": cell_id, "step": plan_step})
 
-        history = self._history_for(cell_id)
         source = self._augment_source(source)
         result = await agent.run(
             source,
             event_stream_handler=on_events,
             cancellation_token=token,
-            message_history=history,
             run_id=run_id,
         )
 

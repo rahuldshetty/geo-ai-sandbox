@@ -17,19 +17,6 @@ def model_from_env() -> str:
     return os.getenv("GEOAI_MODEL", DEFAULT_MODEL)
 
 
-def keep_messages() -> int:
-    """Return how many recent prior messages to replay into a new prompt cell.
-
-    ``GEOAI_KEEP_MESSAGES`` (default 24). ``0`` disables cross-cell replay.
-    """
-    raw = os.getenv("GEOAI_KEEP_MESSAGES", "24").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 24
-    return max(0, value)
-
-
 def resolve_workspace_name(override: str | None = None) -> str:
     """Resolve the active workspace name.
 

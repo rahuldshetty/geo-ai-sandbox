@@ -25,7 +25,6 @@ copy .env.example .env
 | `OPENAI_API_KEY` | Provider API key (OpenAI / Azure / compatible endpoints). |
 | `OPENAI_BASE_URL` | Optional custom OpenAI-compatible endpoint (Azure OpenAI, LiteLLM, vLLM, OpenRouter, local proxy). Leave empty for OpenAI's default. |
 | `GEOAI_MODEL` | Model string. Default `openai:gpt-4o`. Also `anthropic:claude-sonnet-4-5`, `google-gla:gemini-2.5-pro`, `ollama:llama3.1`. |
-| `GEOAI_KEEP_MESSAGES` | How many recent prior prompt-cell messages to replay into a new cell (`0` disables cross-cell replay; default `24`). |
 | `GEOAI_WORKSPACE` | Optional default workspace name (overrides the notebook default). |
 
 ## Run
@@ -42,15 +41,14 @@ copy .env.example .env
   existing one, `Save` persists the current map project.
 - **Cells tab** — a notebook-like prompt. Pick `Prompt` to send a message to the
   GeoAI agent (which runs the tools), or `Python` to execute a command directly in
-  the kernel. Outputs accumulate as `In[n]` / `Out[n]` cells. Prompt cells carry
-  the conversation forward: each run replays a bounded window of recent prior
-  prompt-cell messages (set by `GEOAI_KEEP_MESSAGES`), and the run's token usage
-  is shown next to its output. Traces (steps, messages, usage) persist as JSONL
-  under `traces/`, so a reopened workspace shows the full conversation again. The
-  agent keeps a persistent task plan (`plan.json`, via Pydantic AI Harness
-  `Planning`) and compacts its context in-run (clear old tool results, then
-  summarize) instead of just sliding a window. File → Settings edits the model,
-  the recent-message window (`GEOAI_KEEP_MESSAGES` equivalent), and the UI theme.
+  the kernel. Outputs accumulate as `In[n]` / `Out[n]` cells. Each prompt cell is
+  independent: it starts a fresh plan and does not replay prior cells' messages,
+  while the map state carries over. The run's token usage is shown next to its
+  output. Traces (steps, plan, usage) persist as JSONL under `traces/`, so a
+  reopened workspace shows each cell's plan and progress again. The agent keeps a
+  per-cell task plan (via Pydantic AI Harness `Planning`, captured in the trace)
+  and compacts its context in-run (clear old tool results, then summarize).
+  File → Settings edits the model and the UI theme.
 - **Data tab** — a tree explorer of the workspace files, with **Import files** and
   **Import folder** buttons that copy into the workspace's `data/` folder (plus a
   URL download field). Imported data is automatically included in the agent's
