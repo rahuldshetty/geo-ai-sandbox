@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .config import DEFAULT_MODEL, model_from_env
+from .config import DEFAULT_MODEL, max_retries, model_from_env
 
 SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
 
@@ -22,6 +22,7 @@ def _defaults() -> dict:
         "model": model_from_env() or DEFAULT_MODEL,
         "theme": "light",
         "dangerous_mode": False,
+        "max_retries": max_retries(),
     }
 
 def load_settings() -> dict:
@@ -54,8 +55,13 @@ def _normalize(settings: dict) -> dict:
     defaults = _defaults()
     model = (settings.get("model") or "").strip() or defaults["model"]
     theme = settings.get("theme") if settings.get("theme") in _THEMES else "light"
+    try:
+        retries = int(settings.get("max_retries", defaults["max_retries"]))
+    except (TypeError, ValueError):
+        retries = defaults["max_retries"]
     return {
         "model": model,
         "theme": theme,
         "dangerous_mode": bool(settings.get("dangerous_mode", False)),
+        "max_retries": max(1, retries),
     }

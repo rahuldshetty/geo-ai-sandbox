@@ -137,6 +137,7 @@ class AppState:
         self._run_q: queue.Queue = queue.Queue()
         self._run_tokens: dict[str, CancellationToken] = {}
         self._cancelled: set[str] = set()
+        self._queued: set[str] = set()
         self._run_tokens_lock = threading.Lock()
 
         worker = threading.Thread(target=self._run_worker, name="geoai-run-worker", daemon=True)
@@ -208,6 +209,11 @@ class AppState:
                 self.settings["theme"] = patch["theme"]
             if "dangerous_mode" in patch and patch["dangerous_mode"] is not None:
                 self.settings["dangerous_mode"] = bool(patch["dangerous_mode"])
+            if "max_retries" in patch and patch["max_retries"] is not None:
+                try:
+                    self.settings["max_retries"] = max(1, int(patch["max_retries"]))
+                except (TypeError, ValueError):
+                    self.settings["max_retries"] = 5
             try:
                 self.settings = save_settings(self.settings)
                 if rebuild and self.workspace is not None:
@@ -324,12 +330,16 @@ class AppState:
                 "cell",
                 {"id": cell_id, "status": "running", "trace": [], "usage": None},
             )
+            with self._run_tokens_lock:
+                self._queued.add(cell_id)
             self._run_q.put(cell_id)
 
     def run_all(self) -> None:
         with self.lock:
             for cell in self.cells:
                 if cell["kind"] in _RUNNABLE_KINDS:
+                    with self._run_tokens_lock:
+                        self._queued.add(cell["id"])
                     self._run_q.put(cell["id"])
 
     def _execute_cell(self, cell: dict) -> None:
@@ -339,6 +349,8 @@ class AppState:
         cell["execution_count"] = (prev or 0) + 1
 
         if kind == "python":
+            with self._run_tokens_lock:
+                self._queued.discard(cell["id"])
             try:
                 run_python(source)
                 output = get_last_output_text()
@@ -366,18 +378,19 @@ class AppState:
                 cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
             else:
                 cell["status"] = "done"
-                cell["outputs"] = [_stream_output(result["output"])]
-        self._save_cells()
 
     def stop_cell(self, cell_id: str) -> bool:
-        """Cancel a running prompt cell; returns True if it was mid-run."""
+        """Cancel a running or queued prompt cell; returns True if it was stopped."""
         with self._run_tokens_lock:
-            self._cancelled.add(cell_id)
             token = self._run_tokens.get(cell_id)
-        if token is not None:
-            token.cancel()
-            return True
-        return False
+            if token is None:
+                if cell_id in self._queued:
+                    self._cancelled.add(cell_id)
+                    return True
+                return False
+        token.cancel()
+        return True
+
 
     def _run_prompt(self, cell_id: str, source: str, on_trace) -> dict:
         """Run a prompt cell through the agent, streaming trace steps.
@@ -386,6 +399,7 @@ class AppState:
         ``run_id``, and ``conversation_id`` for the UI and trace persistence.
         """
         with self._run_tokens_lock:
+            self._queued.discard(cell_id)
             if cell_id in self._cancelled:
                 self._cancelled.discard(cell_id)
                 return {
@@ -463,34 +477,68 @@ class AppState:
                     self.broadcast("trace", {"id": cell_id, "step": plan_step})
 
         source = self._augment_source(source)
-        result = await agent.run(
-            source,
-            event_stream_handler=on_events,
-            cancellation_token=token,
-            run_id=run_id,
-        )
+        max_attempts = self.settings.get("max_retries", 5)
+        last_error = None
 
-        usage = trace.usage_to_dict(result.usage)
-        usage_step = {"type": "usage", "usage": usage}
-        on_trace(usage_step)
-        self.broadcast("trace", {"id": cell_id, "step": usage_step})
-        if trace_path is not None:
-            trace.append_step(trace_path, usage_step)
-            trace.append_messages(trace_path, result.new_messages())
-            trace.append_result(
-                trace_path,
-                status="done",
-                output=str(result.output),
-                usage=usage,
-                conversation_id=result.conversation_id,
-            )
+        for attempt in range(1, max_attempts + 1):
+            try:
+                result = await agent.run(
+                    source,
+                    event_stream_handler=on_events,
+                    cancellation_token=token,
+                    run_id=run_id,
+                )
+            except RunCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 - retry transient run failures
+                last_error = exc
+                if attempt < max_attempts:
+                    note = {
+                        "type": "text",
+                        "content": (
+                            f"Attempt {attempt}/{max_attempts} failed "
+                            f"({type(exc).__name__}: {exc}). Retrying."
+                        ),
+                    }
+                    on_trace(note)
+                    if trace_path is not None:
+                        trace.append_step(trace_path, note)
+                    self.broadcast("trace", {"id": cell_id, "step": note})
+                    continue
+                break
+            else:
+                usage = trace.usage_to_dict(result.usage)
+                usage_step = {"type": "usage", "usage": usage}
+                on_trace(usage_step)
+                self.broadcast("trace", {"id": cell_id, "step": usage_step})
+                if trace_path is not None:
+                    trace.append_step(trace_path, usage_step)
+                    trace.append_messages(trace_path, result.new_messages())
+                    trace.append_result(
+                        trace_path,
+                        status="done",
+                        output=str(result.output),
+                        usage=usage,
+                        conversation_id=result.conversation_id,
+                    )
+                return {
+                    "output": str(result.output),
+                    "stopped": False,
+                    "error": None,
+                    "usage": usage,
+                    "run_id": run_id,
+                    "conversation_id": result.conversation_id,
+                }
+
+        error_text = str(last_error) if last_error is not None else "unknown error"
+        self._finish_trace(cell_id, status="error", error=error_text)
         return {
-            "output": str(result.output),
+            "output": None,
             "stopped": False,
-            "error": None,
-            "usage": usage,
-            "run_id": run_id,
-            "conversation_id": result.conversation_id,
+            "error": error_text,
+            "usage": None,
+            "run_id": None,
+            "conversation_id": None,
         }
 
 

@@ -17,6 +17,20 @@ def model_from_env() -> str:
     return os.getenv("GEOAI_MODEL", DEFAULT_MODEL)
 
 
+def max_retries() -> int:
+    """Return the prompt-run retry cap, overridable via ``GEOAI_MAX_RETRIES``.
+
+    Each run attempt covers a full agent invocation; transient failures (model
+    API errors, an aborted run) retry this many times before the cell reports
+    an error. Defaults to 5; values are clamped to at least 1.
+    """
+    raw = os.getenv("GEOAI_MAX_RETRIES", "5").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return 5
+
+
 def resolve_workspace_name(override: str | None = None) -> str:
     """Resolve the active workspace name.
 

@@ -10,7 +10,7 @@ const state = {
   map_app_url: null,
   files: [],
   selected_tab: "Cells",
-  settings: { model: "", theme: "light", dangerous_mode: false },
+  settings: { model: "", theme: "light", dangerous_mode: false, max_retries: 5 },
 };
 
 // -- map bridge state ------------------------------------------------------
@@ -192,7 +192,7 @@ function applySnapshot(snap) {
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
-  state.settings = snap.settings || { model: "", theme: "light", dangerous_mode: false };
+  state.settings = snap.settings || { model: "", theme: "light", dangerous_mode: false, max_retries: 5 };
   applyTheme();
 }
 
@@ -289,8 +289,26 @@ function ensureMap() {
 
 // -- render ----------------------------------------------------------------
 
+let tabScrollTop = 0;
+let renderedWorkspace = null;
+
+function captureTabScroll() {
+  const c = document.getElementById("tab-content");
+  tabScrollTop = c ? c.scrollTop : 0;
+}
+
+function restoreTabScroll() {
+  const c = document.getElementById("tab-content");
+  if (!c) return;
+  const target = Math.min(tabScrollTop, Math.max(0, c.scrollHeight - c.clientHeight));
+  requestAnimationFrame(() => {
+    c.scrollTop = target;
+  });
+}
+
 function render() {
   const menubar = document.getElementById("menubar");
+  const workspaceChanged = renderedWorkspace !== state.active_workspace;
   if (!menubar) {
     // First render: build the full shell. The map panel (and its iframe) is
     // built once and never rebuilt, so the map does not blink/vanish on later
@@ -298,12 +316,17 @@ function render() {
     appEl.replaceChildren();
     appEl.append(renderMenubar(), renderMapPanel(), renderSidePanel());
     ensureMap();
+    renderedWorkspace = state.active_workspace;
     return;
   }
+  if (workspaceChanged) tabScrollTop = 0;
+  else captureTabScroll();
   menubar.replaceWith(renderMenubar());
   const side = document.getElementById("side-panel");
   if (side) side.replaceWith(renderSidePanel());
   ensureMap();
+  renderedWorkspace = state.active_workspace;
+  if (!workspaceChanged) restoreTabScroll();
 }
 
 function renderMenubar() {
@@ -574,8 +597,9 @@ function editMarkdown(cell) {
   const body = box.querySelector(".cell-body");
   const ta = el("textarea", { rows: Math.min(12, Math.max(2, cell.source.split("\n").length)) });
   ta.value = cell.source;
-  ta.addEventListener("blur", () => {
-    updateCell(cell.id, ta.value);
+  ta.addEventListener("blur", async () => {
+    await updateCell(cell.id, ta.value);
+    render();
   });
   body.replaceChildren(ta);
   ta.focus();
@@ -1073,7 +1097,11 @@ async function addCell(kind) {
 }
 
 async function updateCell(cellId, source) {
-  await postThenRender("PUT", "/api/cells/" + cellId, { source });
+  try {
+    await api("PUT", "/api/cells/" + cellId, { source });
+  } catch (e) {
+    toast(e.message || String(e));
+  }
 }
 
 async function deleteCell(cellId) {
@@ -1265,9 +1293,17 @@ function openSettingsDialog() {
     );
     themeSelect.value = state.settings.theme === "dark" ? "dark" : "light";
 
+    const retriesInput = el("input", {
+      type: "number",
+      min: "1",
+      step: "1",
+      value: String(state.settings.max_retries != null ? state.settings.max_retries : 5),
+    });
+
     dialog.append(
       row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
-      row("Theme", "app shell appearance", themeSelect)
+      row("Theme", "app shell appearance", themeSelect),
+      row("Retry attempts", "times a prompt run retries before reporting an error", retriesInput)
     );
 
     dialogActions(dialog, "Save", async () => {
@@ -1275,6 +1311,7 @@ function openSettingsDialog() {
         const settings = await api("PUT", "/api/settings", {
           model: modelInput.value.trim(),
           theme: themeSelect.value,
+          max_retries: Number(retriesInput.value) || 5,
         });
         state.settings = settings;
         applyTheme();
@@ -1373,7 +1410,9 @@ function connectSSE() {
 function renderCellsOnly() {
   const content = document.getElementById("tab-content");
   if (content && state.selected_tab === "Cells") {
+    captureTabScroll();
     content.replaceChildren(renderCellsTab());
+    restoreTabScroll();
   }
 }
 

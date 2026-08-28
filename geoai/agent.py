@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 
-from pydantic_ai import Agent
-from pydantic_ai.capabilities import ReinjectSystemPrompt
+from pydantic_ai import Agent, ToolFailed
+from pydantic_ai.capabilities import AbstractCapability, ReinjectSystemPrompt
+from pydantic_ai.tools import RunContext
 from pydantic_ai_harness import (
     ClearToolResults,
     Planning,
@@ -95,6 +96,23 @@ def resolve_model(model: str):
     return infer_model(model, provider_factory=_factory)
 
 
+class ToolErrorFeedback(AbstractCapability[GeoContext]):
+    """Convert a raised tool exception into a model-visible failure.
+
+    By default pydantic-ai aborts the whole run when a tool raises. Geo-AI's
+    tools raise ordinary exceptions for recoverable conditions (a bounds value
+    outside the Web Mercator range, a file too large to read whole, a missing
+    column), so we surface those as a ``ToolFailed`` result instead. The model
+    sees the error and adapts in the same run — mirroring how ``run_python``
+    returns a traceback string rather than raising.
+    """
+
+    async def on_tool_execute_error(self, ctx, *, call, tool_def, args, error):
+        raise ToolFailed(f"{type(error).__name__}: {error}")
+
+
+
+
 def build_agent(ctx: GeoContext, model: str) -> Agent:
     """Build a pydantic-ai ``Agent`` bound to ``ctx`` with every skill tool.
 
@@ -112,6 +130,7 @@ def build_agent(ctx: GeoContext, model: str) -> Agent:
         capabilities=[
             ReinjectSystemPrompt(),
             Planning(store=_plan_store),
+            ToolErrorFeedback(),
             TieredCompaction(
                 tiers=[
                     ClearToolResults(max_tokens=1, keep_pairs=3),

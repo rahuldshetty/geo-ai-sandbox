@@ -60,6 +60,7 @@ class UpdateSettings(BaseModel):
     model: str | None = None
     theme: str | None = None
     dangerous_mode: bool | None = None
+    max_retries: int | None = None
 
 # -- static -----------------------------------------------------------------
 
