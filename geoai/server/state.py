@@ -157,13 +157,13 @@ class AppState:
                 self.map.load_project(
                     _project.build_empty_project(center=(0, 0), zoom=2)
                 )
-            # Local raster layers are persisted with session-local URLs (the
-            # geolibre static server binds a random port and a per-process token).
-            # Re-register the files and re-point the layers so the in-iframe app
-            # can fetch them again after a server restart.
-            repoint_local_rasters(self.map, ws)
+            # Local raster layers persisted under the old geolibre session-token
+            # scheme carry non-durable URLs; re-point them to this server's stable
+            # /api/files route (needs the context bound first, since repoint uses
+            # `current()` to build the URL).
             ctx = GeoContext(map=self.map, workspace=ws, version=None)
             set_context(ctx)
+            repoint_local_rasters(self.map, ws)
             build_agent(ctx, self.model)
             self.active_name = name
             self.workspace = ws

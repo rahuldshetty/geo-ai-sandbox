@@ -48,6 +48,18 @@ def resolve_workspace_name(override: str | None = None) -> str:
         return Path(file).stem
     return "default"
 
+def server_base_url() -> str:
+    """Return the Geo-AI server's base URL for same-host file serving.
+
+    The server binds ``127.0.0.1`` and serves workspace files from this origin
+    (see ``/api/files/``), so the in-iframe map can fetch local rasters without
+    the cross-origin failures of the geolibre static server's per-session tokens.
+    The port mirrors the ``GEOAI_PORT`` env var used by ``geoai.server.run``.
+    """
+    port = os.getenv("GEOAI_PORT", "8000")
+    return f"http://127.0.0.1:{port}/"
+
+
 def workspace_root(name: str) -> Path:
     """Return the absolute workspace root for ``name``.
 

@@ -8,11 +8,12 @@ import queue
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from ..config import list_workspaces
+from ..workspace import WorkspaceError
 from .state import state
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -71,6 +72,39 @@ def index() -> FileResponse:
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+# -- workspace files ---------------------------------------------------------
+
+# CORS headers for the file route: the map iframe is served by geolibre on its
+# own loopback port, so its fetch of a workspace raster is cross-origin. We own
+# this server, so we answer with a permissive origin (loopback-only, and the
+# path is confined to the active workspace).
+_FILE_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Range",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+}
+
+
+@app.api_route("/api/files/{rel_path:path}", methods=["GET", "HEAD"])
+def api_workspace_file(rel_path: str) -> FileResponse:
+    if state.workspace is None:
+        raise HTTPException(status_code=409, detail="no workspace open")
+    try:
+        path = state.workspace.resolve(rel_path, must_exist=True)
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="not a file")
+    # FileResponse streams the file and honours a single HTTP Range, which the
+    # in-browser GeoTIFF reader relies on for partial reads of a COG.
+    return FileResponse(path, headers=_FILE_CORS)
+
+
+@app.api_route("/api/files/{rel_path:path}", methods=["OPTIONS"])
+def api_workspace_file_preflight(rel_path: str) -> Response:
+    return Response(status_code=200, headers=_FILE_CORS)
 
 
 # -- state ------------------------------------------------------------------

@@ -6,7 +6,9 @@ survives a kernel restart and stays in sync with the workspace.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from geolibre import Map
 
@@ -36,31 +38,72 @@ def _tag_local_source(m: Map, layer_id: str, rel: str) -> None:
             return
 
 
-def repoint_local_rasters(m: Map, ws: Workspace) -> int:
-    """Re-register local raster files and re-point their session URLs.
+def _local_rel_for_layer(layer: dict, ws: Workspace) -> str | None:
+    """Return the workspace-relative path of a locally-served raster layer.
 
-    ``add_raster`` resolves a workspace-relative path to a URL on the geolibre
-    static server, which binds a random port and a per-process token. Those URLs
-    are not durable across a server restart, so on load we re-register each file
-    and rewrite the layer source to the fresh session URL (the original path is
-    kept in ``metadata.geoaiSourcePath``). Returns the number of layers re-pointed.
+    Prefers the ``geoaiSourcePath`` metadata tag. Falls back to recovering the
+    path from a session URL — either the old ``_geolibre_local/...`` scheme (by
+    filename under ``results/``/``data/``/``maps/``) or a ``/api/files/<rel>``
+    URL saved under a previous server port — so projects persist across restarts
+    and port changes.
     """
-    from geolibre._server import register_local_file
+    meta = layer.get("metadata") or {}
+    rel = meta.get(_LOCAL_SOURCE_KEY)
+    if rel:
+        return rel
+    raw = layer.get("sourcePath")
+    if not isinstance(raw, str):
+        source = layer.get("source")
+        if isinstance(source, dict):
+            raw = source.get("url")
+    if not isinstance(raw, str):
+        return None
+    if "_geolibre_local/" in raw:
+        name = Path(urlparse(raw).path).name
+        if not name:
+            return None
+        for sub in ("results", "data", "maps"):
+            rel = f"{sub}/{name}"
+            try:
+                candidate = ws.resolve(rel, must_exist=True)
+            except WorkspaceError:
+                continue
+            if candidate.is_file():
+                return rel
+        return None
+    if "/api/files/" in raw:
+        rel = unquote(urlparse(raw).path.split("/api/files/", 1)[1])
+        try:
+            candidate = ws.resolve(rel, must_exist=True)
+        except WorkspaceError:
+            return None
+        return rel if candidate.is_file() else None
+    return None
 
+
+def repoint_local_rasters(m: Map, ws: Workspace) -> int:
+    """Re-point local raster layers to the stable Geo-AI file route.
+
+    ``add_raster`` embeds a stable ``/api/files/<rel>`` URL served by this
+    harness's own server (with CORS), so local rasters survive a server restart
+    without the geolibre static server's per-session token. This migrates layers
+    saved with the old ``_geolibre_local/...`` session URL back to the stable URL
+    (recovering the workspace path from ``metadata.geoaiSourcePath`` or, when
+    that tag is missing, by filename). Returns the number of layers re-pointed.
+    """
+    ctx = current()
     count = 0
     for layer in m.project.get("layers", []):
-        rel = (layer.get("metadata") or {}).get(_LOCAL_SOURCE_KEY)
+        rel = _local_rel_for_layer(layer, ws)
         if not rel:
             continue
-        try:
-            abs_path = ws.resolve(rel, must_exist=True)
-        except WorkspaceError:
-            continue
-        url = register_local_file(str(abs_path))
+        url = ctx.file_url(rel)
         source = layer.get("source")
         if isinstance(source, dict):
             source["url"] = url
         layer["sourcePath"] = url
+        layer.setdefault("metadata", {})[_LOCAL_SOURCE_KEY] = rel
+        layer["metadata"].pop("error", None)
         count += 1
     return count
 
@@ -145,7 +188,11 @@ def add_raster(
     rel = None
     if not _is_url(path):
         rel = path
-        path = str(ctx.workspace.resolve(path, must_exist=True))
+        # Validate confinement/existence, then serve from this server's own
+        # origin (stable, CORS-enabled) instead of the geolibre static server's
+        # per-session token URL.
+        ctx.workspace.resolve(path, must_exist=True)
+        path = ctx.file_url(rel)
     rescale_arg = [list(rescale)] if rescale else None
     layer_id = m.add_raster(path, name, colormap=colormap, rescale=rescale_arg)
     if rel is not None:
