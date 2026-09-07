@@ -29,3 +29,6 @@ gdal = ["gdal"]
 
 [tool.setuptools.packages.find]
 include = ["geoai*"]
+
+[tool.setuptools.package-data]
+geoai = ["server/static/*"]
