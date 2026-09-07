@@ -11,13 +11,25 @@
 
 FROM quay.io/pypa/manylinux_2_28_x86_64 AS build
 
-ENV PATH=/opt/python/cp312-cp312/bin:$PATH \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# PyInstaller requires a shared libpython; manylinux's bundled CPython is
+# built static, so provision a python-build-standalone interpreter via uv.
+# UV_PYTHON_PREFERENCE=only-managed stops uv from linking the venv to the
+# (static) manylinux CPython it would otherwise discover first.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_PYTHON_PREFERENCE=only-managed
 
 WORKDIR /build
 COPY . .
 
-RUN pip install . pyinstaller
+RUN uv venv --python 3.12 /opt/venv \
+    && uv pip install --python /opt/venv/bin/python . pyinstaller
+
+ENV PATH=/opt/venv/bin:$PATH
+
+# Fail early and clearly if the interpreter lacks a shared libpython.
+RUN python -c "import pathlib, sysconfig; lib = pathlib.Path(sysconfig.get_config_var('LIBDIR')) / 'libpython3.12.so.1.0'; assert lib.exists(), 'shared libpython missing at ' + str(lib)"
 
 RUN pyinstaller packaging/geo-ai.spec \
         --noconfirm --distpath dist --workpath build-pyi
