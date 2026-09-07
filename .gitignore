@@ -222,3 +222,5 @@ __marimo__/
 
 # Geo-AI harness
 workspaces/
+ARCHITECTURE.local.md
+opencode-go.env
