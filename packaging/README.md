@@ -63,6 +63,9 @@ Environment overrides (as in the dev checkout): `GEOAI_HOME` (data root),
 
 First run: copy `.env.example` to `~/.local/share/geo-ai/.env` and fill in
 the provider key — or set the variables in the environment before launching.
+Until a key is configured, opening/creating a workspace fails with a
+provider error ("Set the `OPENAI_API_KEY` environment variable..."); the
+rest of the app (map, python cells, file data) works without one.
 
 ## Build pipeline (Dockerfile.build, stage by stage)
 
