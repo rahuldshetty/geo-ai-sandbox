@@ -1,0 +1,41 @@
+# Route B build: Geo-AI as a single Linux AppImage.
+#
+# PyInstaller one-dir bundle built inside manylinux_2_28 (glibc 2.28) so the
+# artifact runs on any distro from ~2019 on. The AppImage wrapper is produced
+# with appimagetool in --appimage-extract-and-run mode (no FUSE needed in the
+# container).
+#
+#   docker build -f packaging/Dockerfile.build --output dist .
+#
+# Output: dist/geo-ai-<version>-x86_64.AppImage
+
+FROM quay.io/pypa/manylinux_2_28_x86_64 AS build
+
+ENV PATH=/opt/python/cp312-cp312/bin:$PATH \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /build
+COPY . .
+
+RUN pip install . pyinstaller
+
+RUN pyinstaller packaging/geo-ai.spec \
+        --noconfirm --distpath dist --workpath build-pyi
+
+RUN APPIMAGETOOL=/tmp/appimagetool \
+    && curl -fsSL -o "$APPIMAGETOOL" \
+        https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+    && chmod +x "$APPIMAGETOOL" \
+    && mkdir -p AppDir/usr/bin \
+        AppDir/usr/share/applications \
+        AppDir/usr/share/icons/hicolor/128x128/apps \
+    && cp -r dist/geo-ai AppDir/usr/bin/geo-ai \
+    && cp packaging/geo-ai.desktop AppDir/usr/share/applications/geo-ai.desktop \
+    && cp packaging/icon.png AppDir/usr/share/icons/hicolor/128x128/apps/geo-ai.png \
+    && ln -s usr/share/icons/hicolor/128x128/apps/geo-ai.png AppDir/.DirIcon \
+    && VERSION=$(python -c \
+        "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])") \
+    && "$APPIMAGETOOL" --appimage-extract-and-run AppDir "geo-ai-${VERSION}-x86_64.AppImage"
+
+FROM scratch AS artifacts
+COPY --from=build /build/*.AppImage /

@@ -1,0 +1,20 @@
+# Per-Dockerfile ignore (BuildKit reads <Dockerfile>.dockerignore next to it).
+# Patterns are relative to the build context root.
+#
+# Keep user data, secrets, and build junk out of the build context.
+.git
+.venv
+venv
+env
+workspaces
+dist
+build
+build-pyi
+AppDir
+**/__pycache__
+*.py[codz]
+.env
+.env.*
+opencode-go.env
+settings.json
+ARCHITECTURE.local.md
