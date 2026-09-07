@@ -24,9 +24,21 @@ def _open_browser(url: str) -> None:
     threading.Timer(1.0, webbrowser.open, (url,)).start()
 
 
+def _port_in_use(port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def run() -> None:
     load_env()
     port = int(os.getenv("GEOAI_PORT", "8000"))
+    if _port_in_use(port):
+        raise SystemExit(
+            f"Geo-AI: port {port} is already in use; "
+            "set GEOAI_PORT to another port and start again."
+        )
     _open_browser(f"http://127.0.0.1:{port}/")
     import uvicorn
 
