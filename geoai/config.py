@@ -8,8 +8,26 @@ from pathlib import Path
 
 DEFAULT_MODEL = "openai:gpt-4o"
 
-# Repo root: <repo>/geoai/config.py -> <repo>/.
+# Package location: <root>/geoai/config.py -> <root>/.
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+
+
+def app_root() -> Path:
+    """Return the data root for ``workspaces/``, ``settings.json``, ``.env``.
+
+    ``GEOAI_HOME`` wins when set. Otherwise a dev checkout (a ``.git`` dir or
+    an existing ``workspaces/`` next to the package) keeps data beside the
+    source; anything else (a pip-installed or frozen app) falls back to the
+    XDG data home at ``~/.local/share/geo-ai``.
+    """
+    env = os.getenv("GEOAI_HOME", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if (_PACKAGE_ROOT / ".git").exists() or (_PACKAGE_ROOT / "workspaces").is_dir():
+        return _PACKAGE_ROOT
+    xdg = os.getenv("XDG_DATA_HOME", "").strip()
+    base = Path(xdg).expanduser() if xdg else Path.home() / ".local" / "share"
+    return base / "geo-ai"
 
 
 def model_from_env() -> str:
@@ -61,23 +79,23 @@ def server_base_url() -> str:
 
 
 def workspace_root(name: str) -> Path:
-    """Return the absolute workspace root for ``name``.
+    """Return the absolute workspace root for ``name`` (under ``app_root()``).
 
-    Computed relative to the package location, never the process CWD.
+    Computed from the data root, never the process CWD.
     """
-    return _PACKAGE_ROOT / "workspaces" / name
+    return app_root() / "workspaces" / name
 
 
 def list_workspaces() -> list[str]:
     """Return the names of existing workspace directories, sorted."""
-    base = _PACKAGE_ROOT / "workspaces"
+    base = app_root() / "workspaces"
     if not base.is_dir():
         return []
     return sorted(d.name for d in base.iterdir() if d.is_dir())
 
 
 def load_env() -> None:
-    """Load ``<repo>/.env`` into ``os.environ`` (no-op if dotenv is absent).
+    """Load ``<app_root>/.env`` into ``os.environ`` (no-op if dotenv is absent).
 
     Existing environment variables take precedence (dotenv default).
     """
@@ -85,4 +103,4 @@ def load_env() -> None:
         from dotenv import load_dotenv
     except ImportError:  # pragma: no cover
         return
-    load_dotenv(_PACKAGE_ROOT / ".env")
+    load_dotenv(app_root() / ".env")
