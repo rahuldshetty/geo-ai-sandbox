@@ -54,7 +54,8 @@ RUN mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications \
     && ln -s geo-ai.png AppDir/.DirIcon
 
 COPY packaging/geo-ai.sh AppDir/usr/bin/geo-ai
-RUN chmod +x AppDir/usr/bin/geo-ai
+COPY packaging/AppRun AppDir/AppRun
+RUN chmod +x AppDir/usr/bin/geo-ai AppDir/AppRun
 
 RUN APPIMAGETOOL=/tmp/appimagetool \
     && curl -fsSL -o "$APPIMAGETOOL" \
