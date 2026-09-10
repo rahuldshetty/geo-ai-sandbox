@@ -6,7 +6,7 @@ from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, DeferredToolR
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 from pydantic_ai.models.function import FunctionModel
 
-from geoai.server.state import _latest_plan_items
+from geoai.server.state import _latest_plan_items, _ordered_notebook_cells
 from geoai.skills.interaction_tools import InteractionField, request_user_input
 
 
@@ -32,6 +32,26 @@ class InteractionToolTests(unittest.TestCase):
         self.assertEqual(len(restored), 1)
         self.assertEqual(restored[0].id, "current")
         self.assertEqual(restored[0].status.value, "in_progress")
+
+    def test_provenance_is_saved_after_parent_without_becoming_a_visible_cell(self):
+        prompt = {"id": "prompt-1"}
+        second_prompt = {"id": "prompt-2"}
+        tool = {
+            "id": "tool-1",
+            "metadata": {
+                "geoai": {
+                    "generated": True,
+                    "parent_cell_id": "prompt-1",
+                }
+            },
+        }
+
+        ordered = _ordered_notebook_cells([prompt, second_prompt], [tool])
+
+        self.assertEqual(
+            [cell["id"] for cell in ordered],
+            ["prompt-1", "tool-1", "prompt-2"],
+        )
 
     def test_choice_field_requires_options(self):
         with self.assertRaises(ValidationError):

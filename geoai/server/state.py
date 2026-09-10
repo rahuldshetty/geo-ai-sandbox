@@ -68,6 +68,31 @@ def _latest_plan_items(steps: list[dict]) -> list[PlanItem]:
     return []
 
 
+def _is_generated_cell(cell: dict) -> bool:
+    geoai = (cell.get("metadata") or {}).get("geoai") or {}
+    return bool(geoai.get("generated"))
+
+
+def _ordered_notebook_cells(cells: list[dict], provenance: list[dict]) -> list[dict]:
+    """Place hidden provenance directly after its parent in the saved notebook."""
+    by_parent: dict[str, list[dict]] = {}
+    orphaned: list[dict] = []
+    visible_ids = {cell["id"] for cell in cells}
+    for recorded in provenance:
+        geoai = (recorded.get("metadata") or {}).get("geoai") or {}
+        parent_id = geoai.get("parent_cell_id")
+        if parent_id in visible_ids:
+            by_parent.setdefault(parent_id, []).append(recorded)
+        else:
+            orphaned.append(recorded)
+    ordered = []
+    for cell in cells:
+        ordered.append(cell)
+        ordered.extend(by_parent.get(cell["id"], []))
+    ordered.extend(orphaned)
+    return ordered
+
+
 def _filename_from_url(url: str) -> str:
     """Derive a download filename from a URL path, with a safe fallback."""
     name = Path(urlparse(url).path).name
@@ -158,6 +183,7 @@ class AppState:
         self.active_name: str | None = None
         self.workspace: Workspace | None = None
         self.cells: list[dict] = []
+        self.provenance_cells: list[dict] = []
         self._subscribers: list[queue.Queue] = []
         self._subscribers_lock = threading.Lock()
         self._run_q: queue.Queue = queue.Queue()
@@ -175,7 +201,11 @@ class AppState:
     def open_workspace(self, name: str) -> None:
         with self.lock:
             ws = Workspace(workspace_root(name)).create()
-            self.cells = read_nb(ws.root / "notebook.ipynb")
+            notebook_cells = read_nb(ws.root / "notebook.ipynb")
+            self.cells = [cell for cell in notebook_cells if not _is_generated_cell(cell)]
+            self.provenance_cells = [
+                cell for cell in notebook_cells if _is_generated_cell(cell)
+            ]
             self._rehydrate_traces(ws)
             snap = ws.maps / _SNAPSHOT
             if snap.exists():
@@ -205,6 +235,7 @@ class AppState:
             self.active_name = None
             self.workspace = None
             self.cells = []
+            self.provenance_cells = []
             set_context(None)
             self.map.load_project(
                 _project.build_empty_project(center=(0, 0), zoom=2)
@@ -213,7 +244,7 @@ class AppState:
     def save_workspace(self) -> dict:
         with self.lock:
             if self.workspace is not None:
-                write_nb(self.workspace.root / "notebook.ipynb", self.cells)
+                self._save_cells()
                 persist_map(self.map, self.workspace)
             return {"ok": True}
 
@@ -278,6 +309,17 @@ class AppState:
                 cell["run_id"] = loaded["run_id"]
             if loaded["conversation_id"]:
                 cell["conversation_id"] = loaded["conversation_id"]
+            if loaded["status"] == "done" and loaded["output"] is not None:
+                cell["status"] = "done"
+                cell["outputs"] = [_stream_output(str(loaded["output"]))]
+            elif loaded["status"] == "error" and loaded["error"] is not None:
+                cell["status"] = "error"
+                cell["outputs"] = [
+                    _error_output("AgentError", f"ERROR: {loaded['error']}")
+                ]
+            elif loaded["status"] == "stopped":
+                cell["status"] = "stopped"
+                cell["outputs"] = [_stream_output("Stopped.")]
 
     def _finish_trace(
         self,
@@ -310,13 +352,15 @@ class AppState:
 
     def _save_cells(self) -> None:
         if self.workspace is not None:
-            write_nb(self.workspace.root / "notebook.ipynb", self.cells)
+            write_nb(
+                self.workspace.root / "notebook.ipynb",
+                _ordered_notebook_cells(self.cells, self.provenance_cells),
+            )
 
     def _append_recorded_cell(self, cell: dict) -> None:
-        """Append and persist an agent-generated provenance cell."""
-        self.cells.append(cell)
+        """Persist agent provenance without adding it to the interactive cell list."""
+        self.provenance_cells.append(cell)
         self._save_cells()
-        self.broadcast("cell", cell)
 
     def _record_tool_call(self, parent_id: str, step: dict) -> dict:
         """Create a read-only code cell for a structured agent tool call."""
@@ -352,7 +396,7 @@ class AppState:
 
     def _recorded_tool_cell(self, tool_call_id: str) -> dict | None:
         """Find a provenance cell for a tool call already recorded before a resume."""
-        for cell in reversed(self.cells):
+        for cell in reversed(self.provenance_cells):
             geoai = (cell.get("metadata") or {}).get("geoai") or {}
             if geoai.get("tool_call_id") == tool_call_id:
                 return cell
@@ -369,7 +413,6 @@ class AppState:
         cell["execution_count"] = 1
         cell["status"] = "done"
         self._save_cells()
-        self.broadcast("cell", cell)
 
     def _record_agent_response(self, parent_id: str, output: str) -> None:
         """Append the agent's final response as a standard Markdown cell."""
@@ -393,7 +436,7 @@ class AppState:
     ) -> None:
         """Complete the deferred tool cell and append the user's choices."""
         call_id = interaction.get("tool_call_id")
-        for recorded in reversed(self.cells):
+        for recorded in reversed(self.provenance_cells):
             geoai = (recorded.get("metadata") or {}).get("geoai") or {}
             if geoai.get("tool_call_id") == call_id:
                 self._record_tool_result(
@@ -446,6 +489,14 @@ class AppState:
         with self.lock:
             cell = self._find_cell(cell_id)
             self.cells.remove(cell)
+            self.provenance_cells = [
+                recorded
+                for recorded in self.provenance_cells
+                if ((recorded.get("metadata") or {}).get("geoai") or {}).get(
+                    "parent_cell_id"
+                )
+                != cell_id
+            ]
             self._save_cells()
 
     def move_cell(self, cell_id: str, index: int) -> None:
@@ -468,6 +519,14 @@ class AppState:
             cell["usage"] = None
             cell["run_id"] = None
             cell["conversation_id"] = None
+            self.provenance_cells = [
+                recorded
+                for recorded in self.provenance_cells
+                if ((recorded.get("metadata") or {}).get("geoai") or {}).get(
+                    "parent_cell_id"
+                )
+                != cell_id
+            ]
             self.broadcast(
                 "cell",
                 {"id": cell_id, "status": "running", "trace": [], "usage": None},
@@ -527,8 +586,7 @@ class AppState:
                 cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
             else:
                 cell["status"] = "done"
-                if not self.settings.get("record_agent_steps", True):
-                    cell["outputs"] = [_stream_output(result.get("output") or "")]
+                cell["outputs"] = [_stream_output(result.get("output") or "")]
 
     def stop_cell(self, cell_id: str) -> bool:
         """Cancel a running or queued prompt cell; returns True if it was stopped."""
@@ -698,7 +756,6 @@ class AppState:
                     if recorded is not None:
                         recorded["status"] = "waiting_for_input"
                         self._save_cells()
-                        self.broadcast("cell", recorded)
                     if trace_path is not None:
                         trace.append_messages(trace_path, result.all_messages())
                         trace.append_result(

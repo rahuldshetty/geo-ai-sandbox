@@ -205,10 +205,15 @@ async function loadState() {
   render();
 }
 
+function isGeneratedCell(cell) {
+  const geoai = (cell && cell.metadata && cell.metadata.geoai) || {};
+  return Boolean(geoai.generated);
+}
+
 function applySnapshot(snap) {
   state.active_workspace = snap.active_workspace;
   state.workspaces = snap.workspaces || [];
-  state.cells = snap.cells || [];
+  state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
@@ -1609,6 +1614,7 @@ function connectSSE() {
   const es = new EventSource("/api/events");
   es.addEventListener("cell", (e) => {
     const data = JSON.parse(e.data);
+    if (isGeneratedCell(data)) return;
     const idx = state.cells.findIndex((c) => c.id === data.id);
     if (idx === -1) {
       if (data.kind) state.cells.push(data);

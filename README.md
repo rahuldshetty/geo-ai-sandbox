@@ -42,11 +42,11 @@ copy .env.example .env
 - **Cells tab** — a notebook-like prompt. Pick `Prompt` to send a message to the
   GeoAI agent (which runs the tools), or `Python` to execute a command directly in
   the kernel. Prompt requests serialize as Markdown, and the agent's generated
-  tool calls, tool outputs, and final response are appended as provenance cells,
-  making a run readable and reproducible in the saved notebook. This recording
-  can be disabled under File → Settings. Outputs accumulate as `In[n]` / `Out[n]`
-  cells. When a meaningful choice is ambiguous, the agent can pause the cell and
-  show a structured radio, multi-select, confirmation, or custom-text form. The
+  tool calls, tool outputs, and final response are appended as provenance cells
+  in the saved notebook without duplicating them in the interactive Cells tab.
+  This recording can be disabled under File → Settings. When a meaningful choice
+  is ambiguous, the agent can pause the prompt and show a structured radio,
+  multi-select, confirmation, or custom-text form. The
   submitted choice is saved in the notebook and the same agent conversation
   resumes. Each prompt cell is
   independent: it starts a fresh plan and does not replay prior cells' messages,
