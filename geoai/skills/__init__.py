@@ -1,5 +1,14 @@
 """Skill tools for the Geo-AI agent."""
 
+from ..capabilities import discover_capabilities
+from .catalog_tools import (
+    add_catalog_scene,
+    download_catalog_scene,
+    search_openaerialmap,
+    search_vantor_events,
+    search_vantor_imagery,
+)
+from .interaction_tools import request_user_input
 from .map_tools import (
     add_colorbar,
     add_geojson,
@@ -10,6 +19,7 @@ from .map_tools import (
     add_wms,
     classify_layer,
     clear_layers,
+    describe_geolibre_bridge,
     describe_map,
     export_html,
     fit_bounds,
@@ -54,7 +64,17 @@ from .workspace_tools import (
 
 # Every tool registered on the agent, in one explicit list (no dynamic import).
 ALL_TOOLS = [
+    # capability discovery (one compact index instead of more tool schemas)
+    discover_capabilities,
+    request_user_input,
+    # open imagery catalogs
+    search_vantor_events,
+    search_vantor_imagery,
+    search_openaerialmap,
+    add_catalog_scene,
+    download_catalog_scene,
     # map
+    describe_geolibre_bridge,
     describe_map,
     list_colormaps,
     add_geojson,

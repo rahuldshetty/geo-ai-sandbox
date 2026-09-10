@@ -41,7 +41,14 @@ copy .env.example .env
   existing one, `Save` persists the current map project.
 - **Cells tab** — a notebook-like prompt. Pick `Prompt` to send a message to the
   GeoAI agent (which runs the tools), or `Python` to execute a command directly in
-  the kernel. Outputs accumulate as `In[n]` / `Out[n]` cells. Each prompt cell is
+  the kernel. Prompt requests serialize as Markdown, and the agent's generated
+  tool calls, tool outputs, and final response are appended as provenance cells,
+  making a run readable and reproducible in the saved notebook. This recording
+  can be disabled under File → Settings. Outputs accumulate as `In[n]` / `Out[n]`
+  cells. When a meaningful choice is ambiguous, the agent can pause the cell and
+  show a structured radio, multi-select, confirmation, or custom-text form. The
+  submitted choice is saved in the notebook and the same agent conversation
+  resumes. Each prompt cell is
   independent: it starts a fresh plan and does not replay prior cells' messages,
   while the map state carries over. The run's token usage is shown next to its
   output. Traces (steps, plan, usage) persist as JSONL under `traces/`, so a
@@ -53,6 +60,11 @@ copy .env.example .env
   **Import folder** buttons that copy into the workspace's `data/` folder (plus a
   URL download field). Imported data is automatically included in the agent's
   context, so a later prompt can refer to it directly.
+- **Open disaster imagery** — the agent can search the same public Vantor Open
+  Data and OpenAerialMap contracts used by GeoLibre, present matching scenes as
+  an inline choice form, add a selected scene to the live map, or download its
+  source COG into `data/` for analysis. Search metadata is cached under
+  `traces/catalog-scenes.json` so a paused selection survives a restart.
 
 ## Workspace layout
 
@@ -63,6 +75,7 @@ data/     user inputs (imports, downloads, dropped files) — read here
 results/  your outputs (GeoTIFF/COG, GeoJSON, tables) — write here
 maps/     saved .geolibre.json projects
 traces/   per-prompt-cell agent run logs (.jsonl): steps, messages, token usage
+notebook.ipynb  user cells plus optionally recorded agent tool/response cells
 plan.json  task plan (Pydantic AI Harness Planning, JSON)
 workspace.json   manifest (outputs + version)
 ```

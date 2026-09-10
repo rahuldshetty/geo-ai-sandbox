@@ -13,6 +13,7 @@ from urllib.parse import unquote, urlparse
 from geolibre import Map
 
 from ..context import GeoContext, current
+from ..geolibre_bridge import bridge_info
 from ..workspace import Workspace, WorkspaceError
 
 _SNAPSHOT = "current.geolibre.json"
@@ -126,6 +127,16 @@ def _record(ctx: GeoContext, out: Any) -> str:
 def describe_map() -> dict:
     """Return a compact summary of the current map (layers, view, basemap)."""
     return _require_map(current()).describe()
+
+
+def describe_geolibre_bridge() -> dict:
+    """Return the connected GeoLibre version and callable embed methods.
+
+    Plugin methods are not advertised by GeoLibre 2.9's embed protocol yet;
+    use capability discovery for an explicit interactive handoff instead of
+    assuming that a plugin can be called programmatically.
+    """
+    return bridge_info()
 
 
 def list_colormaps() -> dict[str, list[str]]:

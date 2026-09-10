@@ -383,6 +383,103 @@ button {
   overflow: hidden;
 }
 
+.cell.generated-cell {
+  border-left: 3px solid var(--primary);
+}
+
+.cell.generated-cell textarea[readonly] {
+  background: var(--surface-2);
+  color: var(--text-2);
+  cursor: default;
+}
+
+.interaction-form {
+  margin: 0 12px 12px;
+  padding: 14px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.interaction-form h4,
+.interaction-form p {
+  margin: 0 0 8px;
+}
+
+.interaction-prompt,
+.interaction-description {
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.interaction-field {
+  margin: 12px 0;
+  padding: 0;
+  border: 0;
+}
+
+.interaction-field legend {
+  margin-bottom: 7px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.interaction-field > input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.interaction-option {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 6px 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.interaction-option:hover {
+  border-color: var(--primary);
+}
+
+.interaction-option img {
+  width: 96px;
+  height: 64px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+}
+
+.interaction-option-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.interaction-option-copy small {
+  color: var(--text-2);
+}
+
+.interaction-error {
+  min-height: 18px;
+  color: var(--error);
+  font-size: 12px;
+}
+
+.interaction-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .cell-header {
   display: flex;
   align-items: center;

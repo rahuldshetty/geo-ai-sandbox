@@ -11,13 +11,19 @@ import json
 import uuid
 from pathlib import Path
 
-VALID_KINDS = frozenset({"markdown", "python", "prompt"})
+VALID_KINDS = frozenset({"markdown", "python", "prompt", "tool"})
 
 _NBFORMAT = 4
 _NBFORMAT_MINOR = 5
 
 
-def new_cell(kind: str, source: str = "", index: int | None = None) -> dict:
+def new_cell(
+    kind: str,
+    source: str = "",
+    index: int | None = None,
+    *,
+    metadata: dict | None = None,
+) -> dict:
     """Return a fresh cell dict (uuid4 id, status "idle").
 
     ``index`` is applied by the caller (``state.add_cell``); it is accepted here
@@ -32,6 +38,7 @@ def new_cell(kind: str, source: str = "", index: int | None = None) -> dict:
         "outputs": [],
         "execution_count": None,
         "status": "idle",
+        "metadata": metadata or {},
     }
 
 
@@ -94,48 +101,88 @@ def cell_to_nb(cell: dict) -> dict:
     """Map an internal cell to its nbformat 4.5 dict."""
     kind = cell["kind"]
     source_lines = cell.get("source", "").splitlines(keepends=True)
+    metadata = dict(cell.get("metadata") or {})
+    geoai = dict(metadata.get("geoai") or {})
+    metadata["geoai"] = geoai
     if kind == "markdown":
+        if not geoai:
+            metadata.pop("geoai", None)
         return {
             "cell_type": "markdown",
             "id": cell["id"],
-            "metadata": {},
+            "metadata": metadata,
+            "source": source_lines,
+        }
+    if kind == "prompt":
+        # Prompt cells are executable inside Geo-AI, but serialize as Markdown
+        # so the user's request reads naturally in any standard notebook.
+        # Runtime details stay in namespaced metadata; agent actions and the
+        # final response are recorded as subsequent notebook cells.
+        geoai.update(
+            {
+                "kind": "prompt",
+                "execution_count": cell.get("execution_count"),
+                "status": cell.get("status", "idle"),
+            }
+        )
+        return {
+            "cell_type": "markdown",
+            "id": cell["id"],
+            "metadata": metadata,
             "source": source_lines,
         }
     nb = {
         "cell_type": "code",
         "id": cell["id"],
-        "metadata": {},
+        "metadata": metadata,
         "execution_count": cell.get("execution_count"),
         "outputs": _outputs_to_nb(cell.get("outputs", [])),
         "source": source_lines,
     }
-    if kind == "prompt":
-        nb["metadata"] = {"geoai": {"kind": "prompt"}}
+    if kind == "tool":
+        geoai["kind"] = "tool"
     return nb
 
 
 def nb_to_cell(nb_cell: dict) -> dict:
     """Map an nbformat cell to an internal cell dict (derives ``status``)."""
     cell_type = nb_cell.get("cell_type")
-    if cell_type == "markdown":
-        kind = "markdown"
-    elif nb_cell.get("metadata", {}).get("geoai", {}).get("kind") == "prompt":
+    metadata = dict(nb_cell.get("metadata") or {})
+    geoai = metadata.get("geoai", {})
+    geoai_kind = geoai.get("kind")
+    if geoai_kind == "prompt":
         kind = "prompt"
+    elif geoai_kind == "tool":
+        kind = "tool"
+    elif cell_type == "markdown":
+        kind = "markdown"
     else:
         kind = "python"
 
     outputs = _outputs_from_nb(nb_cell.get("outputs", []))
-    execution_count = None if kind == "markdown" else nb_cell.get("execution_count")
-    status = "done" if (outputs or execution_count is not None) else "idle"
+    if kind == "markdown":
+        execution_count = None
+    elif kind == "prompt" and cell_type == "markdown":
+        execution_count = geoai.get("execution_count")
+    else:
+        execution_count = nb_cell.get("execution_count")
+    status = geoai.get("status") if kind == "prompt" else None
+    if status not in {"idle", "done", "error", "stopped"}:
+        status = "done" if (outputs or execution_count is not None) else "idle"
 
-    return {
+    cell = {
         "id": nb_cell.get("id") or uuid.uuid4().hex,
         "kind": kind,
         "source": "".join(nb_cell.get("source", [])),
         "outputs": outputs,
         "execution_count": execution_count,
         "status": status,
+        "metadata": metadata,
     }
+    if kind == "prompt" and isinstance(geoai.get("interaction"), dict):
+        cell["interaction"] = geoai["interaction"]
+        cell["status"] = "waiting_for_input"
+    return cell
 
 
 def read_nb(path: Path) -> list[dict]:

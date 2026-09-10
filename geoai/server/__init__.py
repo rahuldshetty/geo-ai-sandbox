@@ -3,16 +3,27 @@
 from __future__ import annotations
 
 import os
+from importlib import import_module
 
 from ..config import load_env
-from .app import app
-from .state import state
 
 __all__ = ["app", "run", "state"]
 
+# Configuration must be present before importing ``app`` creates the process-wide
+# AppState singleton. Keeping app/state lazy also lets lightweight modules such
+# as notebook serialization be imported without starting GeoLibre.
+load_env()
+
+
+def __getattr__(name: str):
+    if name == "app":
+        return import_module(".app", __name__).app
+    if name == "state":
+        return import_module(".state", __name__).state
+    raise AttributeError(name)
+
 
 def run() -> None:
-    load_env()
     port = int(os.getenv("GEOAI_PORT", "8000"))
     import uvicorn
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from pydantic_ai import Agent, ToolFailed
+from pydantic_ai import Agent, DeferredToolRequests, ToolFailed
 from pydantic_ai.capabilities import AbstractCapability, ReinjectSystemPrompt
 from pydantic_ai.tools import RunContext
 from pydantic_ai_harness import (
@@ -27,7 +27,22 @@ Workspace layout — all tool paths are relative to the workspace root:
 - maps/     saved .geolibre.json projects.
 
 Rules:
-1. Prefer the provided tools over run_python. Use run_python only for math or
+1. For broad requests or requests involving external datasets, call
+   discover_capabilities first. It identifies both executable backend tools and
+   relevant GeoLibre plugins. A capability marked interactive_handoff is not
+   directly callable yet: tell the user which GeoLibre panel to open and what
+   to select, then continue after its layers appear on the persisted map.
+2. Ask for user input with request_user_input when multiple credible datasets,
+   dates, AOIs, or analysis assumptions would materially change the result.
+   Prefer radio/multi-select choices with concise metadata and mark a supported
+   recommendation. Do not ask about minor, cheap, reversible decisions.
+   For open disaster imagery, search Vantor events and scenes (and optionally
+   OpenAerialMap). If several scenes are credible, present compact scene choices
+   using scene_key as each option value, thumbnail_url for previews, and date,
+   phase, sensor, resolution, and cloud cover in the description. After the user
+   chooses, use add_catalog_scene to display it or download_catalog_scene when
+   local analysis is needed.
+3. Prefer the provided tools over run_python. Use run_python only for math or
    processing no tool covers (arbitrary NumPy/pandas, custom algorithms).
    run_python is sandboxed by default: basic stdlib (os, sys, pathlib, shutil,
    time, glob, csv) and the geospatial stack are importable, but subprocess,
@@ -41,24 +56,24 @@ Rules:
    run_python output is truncated to the first ~30 lines. For large output use
    inspect_output(start, count) to page through lines, or query_output(query)
    to extract a JSON/XML sub-value (jq-like keys, or an XPath-lite tag path).
-2. Every path you pass must stay inside the workspace (relative paths resolve
+4. Every path you pass must stay inside the workspace (relative paths resolve
    under the root). Read from data/, write under results/.
-3. To show a raster on the map: inspect with raster_info, stretch with rescale,
+5. To show a raster on the map: inspect with raster_info, stretch with rescale,
    convert with to_cog, then add_raster(results/<name>.tif). Colormap "gray" for
    radar/SAR, "terrain" for elevation.
-4. Vector data: read_vector, process, write results/*.geojson, then
+6. Vector data: read_vector, process, write results/*.geojson, then
    add_geojson or add_vector_to_map.
-5. Sentinel-1 GRD (.SAFE): the imagery is <safe>/measurement/*-vv.tiff and
+7. Sentinel-1 GRD (.SAFE): the imagery is <safe>/measurement/*-vv.tiff and
    *-vh.tiff. Use find_files to locate them, raster_info to inspect, rescale
    (percentile stretch) + to_cog, then add_raster. The annotation/*.xml files
    are large metadata — if you need them, read a slice with read_file using
    offset/limit instead of the whole file.
-6. After changing the map, call describe_map to confirm state.
-7. To focus the map on data you just added, call `fit_bounds` with the `bounds`
+8. After changing the map, call describe_map to confirm state.
+9. To focus the map on data you just added, call `fit_bounds` with the `bounds`
    from `raster_info` or `read_vector`. The embedded map bridge has no scripting
    RPC, so `zoom_to_layer`, `to_image`, `identify`, `fly_to`, and `fit_bounds`'s
    RPC siblings are unavailable — use `fit_bounds`/`set_view`/`describe_map` instead.
-8. Report concisely what you did and where outputs live (relative paths).
+10. Report concisely what you did and where outputs live (relative paths).
 
 Runtime environment (use the provided tools — never read installed-package or
 GeoLibre source to discover capabilities):
@@ -73,6 +88,22 @@ GeoLibre source to discover capabilities):
 
 _agent: "Agent | None" = None
 _plan_store: "InMemoryPlanStore | None" = None
+
+# Keep only routing, interaction, and basic orientation tools in every model
+# request. Pydantic AI's ToolSearch capability automatically exposes the other
+# tools on demand (native search where supported, local search elsewhere).
+_CORE_TOOLS = frozenset(
+    {
+        "discover_capabilities",
+        "request_user_input",
+        "describe_geolibre_bridge",
+        "describe_map",
+        "list_files",
+        "find_files",
+    }
+)
+
+
 def resolve_model(model: str):
     """Resolve a model string to a ``Model`` instance, honoring a custom endpoint.
 
@@ -127,6 +158,7 @@ def build_agent(ctx: GeoContext, model: str) -> Agent:
     agent = Agent(
         resolve_model(model),
         system_prompt=SYSTEM_PROMPT,
+        output_type=[str, DeferredToolRequests],
         capabilities=[
             ReinjectSystemPrompt(),
             Planning(store=_plan_store),
@@ -141,7 +173,7 @@ def build_agent(ctx: GeoContext, model: str) -> Agent:
         ],
     )
     for tool in ALL_TOOLS:
-        agent.tool_plain(tool)
+        agent.tool_plain(tool, defer_loading=tool.__name__ not in _CORE_TOOLS)
 
     _agent = agent
     return agent
