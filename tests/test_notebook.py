@@ -75,6 +75,19 @@ class NotebookSerializationTests(unittest.TestCase):
         self.assertEqual(restored["metadata"]["geoai"]["tool_call_id"], "call-1")
         self.assertEqual(restored["outputs"][0]["text"], '{"count": 3}')
 
+    def test_deferred_tool_preserves_waiting_status(self):
+        cell = new_cell(
+            "tool",
+            "request_user_input(**{})",
+            metadata={"geoai": {"kind": "tool", "tool_call_id": "call-1"}},
+        )
+        cell["status"] = "waiting_for_input"
+
+        restored = nb_to_cell(cell_to_nb(cell))
+
+        self.assertEqual(restored["kind"], "tool")
+        self.assertEqual(restored["status"], "waiting_for_input")
+
     def test_notebook_keeps_prompt_tool_and_response_order(self):
         prompt = new_cell("prompt", "Compare before and after imagery.")
         tool = new_cell(

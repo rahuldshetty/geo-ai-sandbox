@@ -141,6 +141,7 @@ def cell_to_nb(cell: dict) -> dict:
     }
     if kind == "tool":
         geoai["kind"] = "tool"
+        geoai["status"] = cell.get("status", "idle")
     return nb
 
 
@@ -166,8 +167,8 @@ def nb_to_cell(nb_cell: dict) -> dict:
         execution_count = geoai.get("execution_count")
     else:
         execution_count = nb_cell.get("execution_count")
-    status = geoai.get("status") if kind == "prompt" else None
-    if status not in {"idle", "done", "error", "stopped"}:
+    status = geoai.get("status") if kind in {"prompt", "tool"} else None
+    if status not in {"idle", "running", "waiting_for_input", "done", "error", "stopped"}:
         status = "done" if (outputs or execution_count is not None) else "idle"
 
     cell = {

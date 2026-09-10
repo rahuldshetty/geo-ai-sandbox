@@ -76,7 +76,6 @@ results/  your outputs (GeoTIFF/COG, GeoJSON, tables) — write here
 maps/     saved .geolibre.json projects
 traces/   per-prompt-cell agent run logs (.jsonl): steps, messages, token usage
 notebook.ipynb  user cells plus optionally recorded agent tool/response cells
-plan.json  task plan (Pydantic AI Harness Planning, JSON)
 workspace.json   manifest (outputs + version)
 ```
 

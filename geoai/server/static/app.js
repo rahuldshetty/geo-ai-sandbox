@@ -136,6 +136,20 @@ function cellOutputText(cell) {
   return parts.join("\n");
 }
 
+function expandableContent(label, content, extraClass = "") {
+  const text = String(content == null ? "" : content);
+  const details = el("details", {
+    class: "agent-action-content" + (extraClass ? " " + extraClass : ""),
+  });
+  const summary = el("summary", {});
+  summary.append(
+    el("strong", { text: label }),
+    el("span", { class: "agent-action-preview", text: compactPreview(text) })
+  );
+  details.append(summary, el("pre", { text }));
+  return details;
+}
+
 function canonical(v) {
   if (Array.isArray(v)) return v.map(canonical);
   if (v && typeof v === "object") {
@@ -550,6 +564,27 @@ function renderCell(cell) {
             ? "prompt"
             : "py";
   header.append(el("span", { class: "badge", text: badge }));
+  if (kind === "tool") {
+    header.append(
+      el("span", {
+        class: "agent-action-name",
+        text: geoai.tool_name || "tool",
+      }),
+      el("span", {
+        class: "agent-action-status status-" + (cell.status || "idle"),
+        text:
+          cell.status === "waiting_for_input"
+            ? "waiting"
+            : cell.status === "running"
+              ? "running"
+              : cell.status === "error"
+                ? "failed"
+                : cell.status === "done"
+                  ? "done"
+                  : "",
+      })
+    );
+  }
   header.append(el("span", { class: "spacer" }));
 
   if (kind === "markdown") {
@@ -577,6 +612,12 @@ function renderCell(cell) {
     const md = el("div", { class: "markdown" });
     md.innerHTML = renderMarkdown(cell.source);
     body.append(md);
+  } else if (kind === "tool") {
+    const input =
+      geoai.args === undefined
+        ? cell.source
+        : JSON.stringify(geoai.args, null, 2);
+    body.append(expandableContent("Input", input));
   } else {
     const ta = el("textarea", {
       rows: Math.min(12, Math.max(2, cell.source.split("\n").length)),
@@ -597,7 +638,7 @@ function renderCell(cell) {
   }
   box.append(body);
 
-  if (kind !== "markdown") {
+  if (kind !== "markdown" && kind !== "tool") {
     const outRow = el("div", { class: "cell-out" });
     outRow.append(
       el("span", {
@@ -634,6 +675,19 @@ function renderCell(cell) {
       outBlock.append(el("pre", { class: cell.status === "error" ? "error" : "", text }));
     }
     box.append(outBlock);
+  } else if (kind === "tool") {
+    const text = cellOutputText(cell);
+    if (text) {
+      const output = el("div", { class: "agent-action-output" });
+      output.append(
+        expandableContent(
+          cell.status === "error" ? "Error" : "Output",
+          text,
+          cell.status === "error" ? "error" : ""
+        )
+      );
+      box.append(output);
+    }
   }
 
   return box;

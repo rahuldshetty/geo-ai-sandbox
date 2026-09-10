@@ -27,6 +27,7 @@ from pydantic_ai import (
     DeferredToolResults,
     RunCancelled,
 )
+from pydantic_ai_harness.planning import PlanItem
 
 
 from .. import trace
@@ -47,6 +48,24 @@ _RUNNABLE_KINDS = frozenset({"python", "prompt"})
 _PLAN_TOOLS = frozenset(
     {"write_plan", "add_task", "update_task_status", "update_task_statuses", "remove_task"}
 )
+
+
+def _latest_plan_items(steps: list[dict]) -> list[PlanItem]:
+    """Rebuild the latest plan snapshot from a prompt's persisted trace."""
+    for step in reversed(steps):
+        if not isinstance(step, dict) or step.get("type") != "plan":
+            continue
+        items = step.get("items")
+        if not isinstance(items, list):
+            return []
+        restored = []
+        for item in items:
+            try:
+                restored.append(PlanItem.model_validate(item))
+            except (TypeError, ValueError):
+                continue
+        return restored
+    return []
 
 
 def _filename_from_url(url: str) -> str:
@@ -598,8 +617,13 @@ class AppState:
             )
 
         plan_store = current_plan_store()
-        if plan_store is not None and resume is None:
-            await plan_store.set_items([])
+        if plan_store is not None:
+            # The store is shared by the single worker. A different prompt may
+            # run while this one waits for user input, and a server restart
+            # recreates the in-memory store. Restore this prompt's own latest
+            # snapshot before resuming instead of inheriting another run's plan.
+            plan_items = _latest_plan_items(trace_steps) if resume else []
+            await plan_store.set_items(plan_items)
         recorded_tools: dict[str, dict] = {}
 
         async def on_events(ctx, events):  # noqa: ARG001 - ctx unused
@@ -670,6 +694,11 @@ class AppState:
                 usage = trace.usage_to_dict(result.usage)
                 if isinstance(result.output, DeferredToolRequests):
                     interaction = self._interaction_from_deferred(result.output)
+                    recorded = self._recorded_tool_cell(interaction["tool_call_id"])
+                    if recorded is not None:
+                        recorded["status"] = "waiting_for_input"
+                        self._save_cells()
+                        self.broadcast("cell", recorded)
                     if trace_path is not None:
                         trace.append_messages(trace_path, result.all_messages())
                         trace.append_result(

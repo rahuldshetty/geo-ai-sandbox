@@ -393,6 +393,90 @@ button {
   cursor: default;
 }
 
+.agent-action-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-action-status {
+  color: var(--text-3);
+  font-size: 11px;
+}
+
+.agent-action-status.status-running,
+.agent-action-status.status-waiting_for_input {
+  color: var(--warn);
+}
+
+.agent-action-status.status-error {
+  color: var(--error);
+}
+
+.agent-action-status.status-done {
+  color: var(--success);
+}
+
+.agent-action-content {
+  min-width: 0;
+}
+
+.agent-action-content summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.agent-action-content summary::marker {
+  color: var(--text-3);
+}
+
+.agent-action-content summary strong {
+  flex: 0 0 auto;
+}
+
+.agent-action-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-action-content pre {
+  max-height: 360px;
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.agent-action-output {
+  padding: 0 12px 10px;
+}
+
+.agent-action-content.error summary,
+.agent-action-content.error pre {
+  color: var(--error);
+}
+
 .interaction-form {
   margin: 0 12px 12px;
   padding: 14px;

@@ -78,12 +78,24 @@ class GeoLibreBridgeHandshake(BaseModel):
 # -- static -----------------------------------------------------------------
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve the local app shell without retaining stale frontend bundles."""
+
+    async def get_response(self, path: str, scope: dict) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 
 
 # -- workspace files ---------------------------------------------------------
