@@ -203,6 +203,10 @@ async function loadState() {
   const snap = await api("GET", "/api/state");
   applySnapshot(snap);
   render();
+  const pending = state.cells.find(
+    (cell) => cell.status === "waiting_for_input" && cell.interaction
+  );
+  if (pending) revealInteraction(pending.id);
 }
 
 function isGeneratedCell(cell) {
@@ -1246,10 +1250,47 @@ function applyTrace(data) {
   if (idx === -1) return;
   if (!Array.isArray(state.cells[idx].trace)) state.cells[idx].trace = [];
   state.cells[idx].trace.push(data.step);
+  if (data.step.type === "tool_call" && data.step.name === "request_user_input") {
+    window.setTimeout(() => reconcilePendingInteraction(data.id), 150);
+  }
   const container = document.querySelector('.cell[data-cell-id="' + data.id + '"] .trace');
   if (!container) return;
   appendTraceStep(container, data.step);
 }
+
+function revealInteraction(cellId) {
+  window.requestAnimationFrame(() => {
+    const form = document.querySelector(
+      '.cell[data-cell-id="' + cellId + '"] .interaction-form'
+    );
+    if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+async function reconcilePendingInteraction(cellId, attempt = 0) {
+  try {
+    const snap = await api("GET", "/api/state");
+    const serverCell = (snap.cells || []).find((cell) => cell.id === cellId);
+    const idx = state.cells.findIndex((cell) => cell.id === cellId);
+    if (serverCell && idx !== -1) {
+      state.cells[idx] = serverCell;
+      renderCellsOnly();
+      refreshStatusBar();
+      if (serverCell.status === "waiting_for_input" && serverCell.interaction) {
+        revealInteraction(cellId);
+        return;
+      }
+      if (serverCell.status !== "running") return;
+    }
+  } catch (_) {
+    // SSE remains the primary update path; retry briefly while the deferred
+    // tool transitions from a streamed call into a waiting prompt.
+  }
+  if (attempt < 20) {
+    window.setTimeout(() => reconcilePendingInteraction(cellId, attempt + 1), 250);
+  }
+}
+
 function buildFileTree(files) {
   const root = { name: "", isDir: true, children: new Map() };
   for (const f of files) {
@@ -1647,6 +1688,9 @@ function connectSSE() {
     }
     renderCellsOnly();
     refreshStatusBar();
+    if (data.status === "waiting_for_input" && data.interaction) {
+      revealInteraction(data.id);
+    }
   });
   es.addEventListener("trace", (e) => {
     applyTrace(JSON.parse(e.data));
