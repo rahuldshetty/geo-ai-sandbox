@@ -667,11 +667,8 @@ function renderCell(cell) {
 
     if (kind === "prompt") {
       const trace = el("div", { class: "trace" });
-      for (const node of renderTraceSteps(cell.trace || [])) trace.append(node);
+      for (const node of renderTraceSteps(cell.trace || [], cell)) trace.append(node);
       box.append(trace);
-      if (cell.status === "waiting_for_input" && cell.interaction) {
-        box.append(renderInteraction(cell));
-      }
     }
 
     const outBlock = el("div", { class: "cell-out-block" });
@@ -874,19 +871,46 @@ function usageTitle(u) {
   return parts.join(" · ");
 }
 
-function renderTraceSteps(trace) {
+function renderTraceSteps(trace, cell = null) {
   const steps = trace || [];
   const nodes = [];
+  let interactionRendered = false;
   const plan = planFromTrace(steps);
   if (plan) nodes.push(planNode(plan));
   for (const group of groupTraceSteps(steps)) {
     if (group.type === "text") {
       nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
     } else if (group.type === "tool") {
-      nodes.push(toolStepNode(group));
+      const toolNode = toolStepNode(group);
+      nodes.push(toolNode);
+      const call = group.call;
+      if (
+        cell &&
+        cell.status === "waiting_for_input" &&
+        cell.interaction &&
+        call &&
+        call.tool_call_id === cell.interaction.tool_call_id
+      ) {
+        toolNode.classList.remove("pending");
+        toolNode.classList.add("waiting");
+        const summary = toolNode.querySelector("summary");
+        if (summary) {
+          summary.append(el("span", { class: "trace-input-required", text: "input required" }));
+        }
+        nodes.push(renderInteraction(cell));
+        interactionRendered = true;
+      }
     } else if (group.type === "usage") {
       nodes.push(usageNode(group.usage));
     }
+  }
+  if (
+    cell &&
+    cell.status === "waiting_for_input" &&
+    cell.interaction &&
+    !interactionRendered
+  ) {
+    nodes.unshift(renderInteraction(cell));
   }
   return nodes;
 }
