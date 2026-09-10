@@ -201,11 +201,20 @@ class AppState:
     def open_workspace(self, name: str) -> None:
         with self.lock:
             ws = Workspace(workspace_root(name)).create()
+            self.workspace = ws
             notebook_cells = read_nb(ws.root / "notebook.ipynb")
             self.cells = [cell for cell in notebook_cells if not _is_generated_cell(cell)]
             self.provenance_cells = [
                 cell for cell in notebook_cells if _is_generated_cell(cell)
             ]
+            # Migrate interactions created before they became first-class cells.
+            for cell in list(self.cells):
+                if (
+                    cell.get("kind") == "prompt"
+                    and cell.get("status") == "waiting_for_input"
+                    and isinstance(cell.get("interaction"), dict)
+                ):
+                    self._append_interaction_cell(cell["id"], cell["interaction"])
             self._rehydrate_traces(ws)
             snap = ws.maps / _SNAPSHOT
             if snap.exists():
@@ -431,10 +440,51 @@ class AppState:
         cell["status"] = "done"
         self._append_recorded_cell(cell)
 
+    def _find_interaction_cell(self, parent_id: str, interaction_id: str) -> dict | None:
+        for cell in self.cells:
+            geoai = (cell.get("metadata") or {}).get("geoai") or {}
+            if (
+                cell.get("kind") == "interaction"
+                and geoai.get("parent_cell_id") == parent_id
+                and geoai.get("interaction_id") == interaction_id
+            ):
+                return cell
+        return None
+
+    def _append_interaction_cell(self, parent_id: str, interaction: dict) -> dict:
+        """Insert a persistent input cell immediately after its parent prompt."""
+        existing = self._find_interaction_cell(parent_id, interaction["id"])
+        if existing is not None:
+            return existing
+        title = interaction.get("title") or "Input required"
+        prompt = interaction.get("prompt") or ""
+        cell = new_cell(
+            "interaction",
+            f"## {title}\n\n{prompt}".strip(),
+            metadata={
+                "geoai": {
+                    "kind": "interaction",
+                    "role": "assistant",
+                    "parent_cell_id": parent_id,
+                    "interaction_id": interaction["id"],
+                }
+            },
+        )
+        cell["status"] = "waiting_for_input"
+        cell["interaction"] = interaction
+        parent_index = next(
+            (index for index, item in enumerate(self.cells) if item["id"] == parent_id),
+            len(self.cells) - 1,
+        )
+        self.cells.insert(parent_index + 1, cell)
+        self._save_cells()
+        self.broadcast("cell", cell)
+        return cell
+
     def _record_interaction_response(
         self, parent_id: str, interaction: dict, answers: dict
     ) -> None:
-        """Complete the deferred tool cell and append the user's choices."""
+        """Complete the deferred tool record and persistent interaction cell."""
         call_id = interaction.get("tool_call_id")
         for recorded in reversed(self.provenance_cells):
             geoai = (recorded.get("metadata") or {}).get("geoai") or {}
@@ -444,29 +494,27 @@ class AppState:
                     {"content": {"user_response": answers}},
                 )
                 break
-        labels = {
-            field.get("id"): field.get("label", field.get("id"))
+        fields = {
+            field.get("id"): field
             for field in interaction.get("fields", [])
         }
         lines = ["### Input provided"]
         for key, value in answers.items():
-            rendered = ", ".join(map(str, value)) if isinstance(value, list) else str(value)
-            lines.append(f"- **{labels.get(key, key)}:** {rendered}")
-        cell = new_cell(
-            "markdown",
-            "\n".join(lines),
-            metadata={
-                "geoai": {
-                    "kind": "interaction_response",
-                    "role": "user",
-                    "parent_cell_id": parent_id,
-                    "interaction_id": interaction.get("id"),
-                    "generated": True,
-                }
-            },
-        )
-        cell["status"] = "done"
-        self._append_recorded_cell(cell)
+            field = fields.get(key) or {}
+            option_labels = {
+                option.get("value"): option.get("label", option.get("value"))
+                for option in field.get("options", [])
+            }
+            values = value if isinstance(value, list) else [value]
+            rendered = ", ".join(str(option_labels.get(item, item)) for item in values)
+            lines.append(f"- **{field.get('label', key)}:** {rendered}")
+        cell = self._find_interaction_cell(parent_id, interaction["id"])
+        if cell is not None:
+            cell["status"] = "done"
+            cell["answers"] = answers
+            cell["source"] = "\n".join(lines)
+            self._save_cells()
+            self.broadcast("cell", cell)
 
     def add_cell(self, kind: str, source: str = "", index: int | None = None) -> dict:
         with self.lock:
@@ -489,6 +537,17 @@ class AppState:
         with self.lock:
             cell = self._find_cell(cell_id)
             self.cells.remove(cell)
+            self.cells = [
+                item
+                for item in self.cells
+                if not (
+                    item.get("kind") == "interaction"
+                    and ((item.get("metadata") or {}).get("geoai") or {}).get(
+                        "parent_cell_id"
+                    )
+                    == cell_id
+                )
+            ]
             self.provenance_cells = [
                 recorded
                 for recorded in self.provenance_cells
@@ -519,6 +578,17 @@ class AppState:
             cell["usage"] = None
             cell["run_id"] = None
             cell["conversation_id"] = None
+            self.cells = [
+                item
+                for item in self.cells
+                if not (
+                    item.get("kind") == "interaction"
+                    and ((item.get("metadata") or {}).get("geoai") or {}).get(
+                        "parent_cell_id"
+                    )
+                    == cell_id
+                )
+            ]
             self.provenance_cells = [
                 recorded
                 for recorded in self.provenance_cells
@@ -578,6 +648,7 @@ class AppState:
                     "interaction"
                 ]
                 cell["outputs"] = []
+                self._append_interaction_cell(cell["id"], result["interaction"])
             elif result.get("stopped"):
                 cell["status"] = "stopped"
                 cell["outputs"] = [_stream_output("Stopped.")]
@@ -879,8 +950,7 @@ class AppState:
                 "conversation_id": cell.get("conversation_id"),
                 "answers": answers,
             }
-            if self.settings.get("record_agent_steps", True):
-                self._record_interaction_response(cell_id, interaction, answers)
+            self._record_interaction_response(cell_id, interaction, answers)
             cell["status"] = "running"
             cell["interaction"] = None
             cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
@@ -906,6 +976,12 @@ class AppState:
             cell["interaction"] = None
             cell["outputs"] = [_stream_output("Stopped while waiting for input.")]
             cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
+            interaction_cell = self._find_interaction_cell(cell_id, interaction_id)
+            if interaction_cell is not None:
+                interaction_cell["status"] = "stopped"
+                interaction_cell["answers"] = {}
+                interaction_cell["source"] = "### Input cancelled"
+                self.broadcast("cell", interaction_cell)
             self._save_cells()
             self.broadcast("cell", cell)
 

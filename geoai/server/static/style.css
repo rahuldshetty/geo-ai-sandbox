@@ -485,8 +485,44 @@ button {
   background: var(--surface-2);
 }
 
-.trace > .interaction-form {
-  margin: 0;
+.cell.interaction-cell {
+  border-color: var(--primary);
+  border-left: 3px solid var(--primary);
+}
+
+.interaction-cell .cell-header {
+  justify-content: flex-start;
+}
+
+.interaction-cell-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.interaction-cell-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.interaction-cell .interaction-form {
+  margin: 10px 12px 12px;
+}
+
+.interaction-cell-response {
+  padding: 10px 14px 12px;
 }
 
 .interaction-form h4,

@@ -523,8 +523,38 @@ function renderCellsTab() {
   return wrap;
 }
 
+function renderInteractionCell(cell) {
+  const request = cell.interaction || {};
+  const box = el("div", {
+    class: "cell interaction-cell",
+    "data-interaction-for": ((cell.metadata || {}).geoai || {}).parent_cell_id || "",
+  });
+  const header = el("div", { class: "cell-header" });
+  header.append(
+    el("span", { class: "interaction-cell-icon", text: "?" }),
+    el("span", {
+      class: "badge",
+      text: cell.status === "done" ? "input provided" : cell.status === "stopped" ? "cancelled" : "input required",
+    }),
+    el("span", {
+      class: "interaction-cell-title",
+      text: request.title || "Your input is needed",
+    })
+  );
+  box.append(header);
+  if (cell.status === "waiting_for_input") {
+    box.append(renderInteraction(cell));
+  } else {
+    const body = el("div", { class: "interaction-cell-response markdown" });
+    body.innerHTML = renderMarkdown(cell.source || "### Input provided");
+    box.append(body);
+  }
+  return box;
+}
+
 function renderCell(cell) {
   const kind = cell.kind;
+  if (kind === "interaction") return renderInteractionCell(cell);
   const geoai = (cell.metadata && cell.metadata.geoai) || {};
   const generated = Boolean(geoai.generated);
   const box = el("div", {
@@ -701,6 +731,8 @@ function renderCell(cell) {
 
 function renderInteraction(cell) {
   const request = cell.interaction;
+  const geoai = (cell.metadata && cell.metadata.geoai) || {};
+  const parentCellId = cell.kind === "interaction" ? geoai.parent_cell_id : cell.id;
   const form = el("form", { class: "interaction-form" });
   form.append(
     el("h4", { text: request.title || "Input required" }),
@@ -776,10 +808,11 @@ function renderInteraction(cell) {
           try {
             await api(
               "DELETE",
-              "/api/cells/" + cell.id + "/interaction/" + request.id
+              "/api/cells/" + parentCellId + "/interaction/" + request.id
             );
             cell.status = "stopped";
-            cell.interaction = null;
+            cell.answers = {};
+            cell.source = "### Input cancelled";
             renderCellsOnly();
           } catch (e) {
             error.textContent = e.message || String(e);
@@ -808,12 +841,27 @@ function renderInteraction(cell) {
     }
     submit.disabled = true;
     try {
-      await api("POST", "/api/cells/" + cell.id + "/interaction", {
+      await api("POST", "/api/cells/" + parentCellId + "/interaction", {
         interaction_id: request.id,
         answers,
       });
-      cell.status = "running";
-      cell.interaction = null;
+      cell.status = "done";
+      cell.answers = answers;
+      const fields = new Map((request.fields || []).map((field) => [field.id, field]));
+      const lines = ["### Input provided"];
+      for (const [id, value] of Object.entries(answers)) {
+        const field = fields.get(id) || {};
+        const options = new Map((field.options || []).map((option) => [option.value, option.label]));
+        const values = Array.isArray(value) ? value : [value];
+        const rendered = values.map((item) => options.get(item) || String(item)).join(", ");
+        lines.push("- **" + (field.label || id) + ":** " + rendered);
+      }
+      cell.source = lines.join("\n");
+      const parentIndex = state.cells.findIndex((item) => item.id === parentCellId);
+      if (parentIndex !== -1) {
+        state.cells[parentIndex].status = "running";
+        state.cells[parentIndex].interaction = null;
+      }
       renderCellsOnly();
     } catch (e) {
       submit.disabled = false;
@@ -878,7 +926,6 @@ function usageTitle(u) {
 function renderTraceSteps(trace, cell = null) {
   const steps = trace || [];
   const nodes = [];
-  let interactionRendered = false;
   const plan = planFromTrace(steps);
   if (plan) nodes.push(planNode(plan));
   for (const group of groupTraceSteps(steps)) {
@@ -901,20 +948,10 @@ function renderTraceSteps(trace, cell = null) {
         if (summary) {
           summary.append(el("span", { class: "trace-input-required", text: "input required" }));
         }
-        nodes.push(renderInteraction(cell));
-        interactionRendered = true;
       }
     } else if (group.type === "usage") {
       nodes.push(usageNode(group.usage));
     }
-  }
-  if (
-    cell &&
-    cell.status === "waiting_for_input" &&
-    cell.interaction &&
-    !interactionRendered
-  ) {
-    nodes.unshift(renderInteraction(cell));
   }
   return nodes;
 }
@@ -1261,7 +1298,7 @@ function applyTrace(data) {
 function revealInteraction(cellId) {
   window.requestAnimationFrame(() => {
     const form = document.querySelector(
-      '.cell[data-cell-id="' + cellId + '"] .interaction-form'
+      '.interaction-cell[data-interaction-for="' + cellId + '"] .interaction-form'
     );
     if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
   });
@@ -1271,9 +1308,8 @@ async function reconcilePendingInteraction(cellId, attempt = 0) {
   try {
     const snap = await api("GET", "/api/state");
     const serverCell = (snap.cells || []).find((cell) => cell.id === cellId);
-    const idx = state.cells.findIndex((cell) => cell.id === cellId);
-    if (serverCell && idx !== -1) {
-      state.cells[idx] = serverCell;
+    if (serverCell) {
+      state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
       renderCellsOnly();
       refreshStatusBar();
       if (serverCell.status === "waiting_for_input" && serverCell.interaction) {
@@ -1682,7 +1718,13 @@ function connectSSE() {
     if (isGeneratedCell(data)) return;
     const idx = state.cells.findIndex((c) => c.id === data.id);
     if (idx === -1) {
-      if (data.kind) state.cells.push(data);
+      if (data.kind === "interaction") {
+        const geoai = (data.metadata && data.metadata.geoai) || {};
+        const parentIndex = state.cells.findIndex((cell) => cell.id === geoai.parent_cell_id);
+        state.cells.splice(parentIndex < 0 ? state.cells.length : parentIndex + 1, 0, data);
+      } else if (data.kind) {
+        state.cells.push(data);
+      }
     } else {
       state.cells[idx] = { ...state.cells[idx], ...data };
     }

@@ -11,7 +11,7 @@ import json
 import uuid
 from pathlib import Path
 
-VALID_KINDS = frozenset({"markdown", "python", "prompt", "tool"})
+VALID_KINDS = frozenset({"markdown", "python", "prompt", "tool", "interaction"})
 
 _NBFORMAT = 4
 _NBFORMAT_MINOR = 5
@@ -131,6 +131,21 @@ def cell_to_nb(cell: dict) -> dict:
             "metadata": metadata,
             "source": source_lines,
         }
+    if kind == "interaction":
+        geoai.update(
+            {
+                "kind": "interaction",
+                "status": cell.get("status", "idle"),
+                "interaction": cell.get("interaction"),
+                "answers": cell.get("answers"),
+            }
+        )
+        return {
+            "cell_type": "markdown",
+            "id": cell["id"],
+            "metadata": metadata,
+            "source": source_lines,
+        }
     nb = {
         "cell_type": "code",
         "id": cell["id"],
@@ -153,6 +168,8 @@ def nb_to_cell(nb_cell: dict) -> dict:
     geoai_kind = geoai.get("kind")
     if geoai_kind == "prompt":
         kind = "prompt"
+    elif geoai_kind == "interaction":
+        kind = "interaction"
     elif geoai_kind == "tool":
         kind = "tool"
     elif cell_type == "markdown":
@@ -161,13 +178,13 @@ def nb_to_cell(nb_cell: dict) -> dict:
         kind = "python"
 
     outputs = _outputs_from_nb(nb_cell.get("outputs", []))
-    if kind == "markdown":
+    if kind in {"markdown", "interaction"}:
         execution_count = None
     elif kind == "prompt" and cell_type == "markdown":
         execution_count = geoai.get("execution_count")
     else:
         execution_count = nb_cell.get("execution_count")
-    status = geoai.get("status") if kind in {"prompt", "tool"} else None
+    status = geoai.get("status") if kind in {"prompt", "tool", "interaction"} else None
     if status not in {"idle", "running", "waiting_for_input", "done", "error", "stopped"}:
         status = "done" if (outputs or execution_count is not None) else "idle"
 
@@ -183,6 +200,11 @@ def nb_to_cell(nb_cell: dict) -> dict:
     if kind == "prompt" and isinstance(geoai.get("interaction"), dict):
         cell["interaction"] = geoai["interaction"]
         cell["status"] = "waiting_for_input"
+    if kind == "interaction":
+        if isinstance(geoai.get("interaction"), dict):
+            cell["interaction"] = geoai["interaction"]
+        if isinstance(geoai.get("answers"), dict):
+            cell["answers"] = geoai["answers"]
     return cell
 
 

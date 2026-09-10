@@ -134,6 +134,30 @@ class NotebookSerializationTests(unittest.TestCase):
         self.assertEqual(restored["status"], "waiting_for_input")
         self.assertEqual(restored["interaction"]["id"], "interaction-1")
 
+    def test_persistent_interaction_cell_keeps_form_and_answers(self):
+        interaction = {
+            "id": "interaction-1",
+            "tool_call_id": "call-1",
+            "title": "Choose imagery",
+            "prompt": "Select a scene.",
+            "fields": [],
+        }
+        cell = new_cell(
+            "interaction",
+            "### Input provided\n- **Scene:** Post-event",
+            metadata={"geoai": {"parent_cell_id": "prompt-1"}},
+        )
+        cell["status"] = "done"
+        cell["interaction"] = interaction
+        cell["answers"] = {"scene": "post"}
+
+        restored = nb_to_cell(cell_to_nb(cell))
+
+        self.assertEqual(restored["kind"], "interaction")
+        self.assertEqual(restored["status"], "done")
+        self.assertEqual(restored["interaction"]["id"], "interaction-1")
+        self.assertEqual(restored["answers"], {"scene": "post"})
+
 
 if __name__ == "__main__":
     unittest.main()
