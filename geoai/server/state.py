@@ -530,6 +530,9 @@ class AppState:
             cell["usage"] = None
             cell["run_id"] = None
             cell["conversation_id"] = None
+            # A fresh run supersedes any interaction left pending by a prior run.
+            cell["interaction"] = None
+            cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
             self.provenance_cells = [
                 recorded
                 for recorded in self.provenance_cells
@@ -577,7 +580,7 @@ class AppState:
                 cell["outputs"] = [_stream_output(output)]
         else:  # prompt
             trace_steps: list[dict] = list(cell.get("trace", [])) if resume else []
-            result = self._run_prompt(cell["id"], source, trace_steps.append, resume=resume)
+            result = self._run_prompt(cell["id"], source, trace_steps, resume=resume)
             cell["trace"] = trace_steps
             cell["usage"] = result.get("usage")
             cell["run_id"] = result.get("run_id")
@@ -613,9 +616,13 @@ class AppState:
 
 
     def _run_prompt(
-        self, cell_id: str, source: str, on_trace, *, resume: dict | None = None
+        self, cell_id: str, source: str, trace_steps: list[dict], *, resume: dict | None = None
     ) -> dict:
         """Run a prompt cell through the agent, streaming trace steps.
+
+        ``trace_steps`` is the cell's live step list: new steps are appended to
+        it as they stream, and on resume its existing entries are the prior
+        segment's steps (used to restore the plan snapshot).
 
         Returns a dict with ``output``/``stopped``/``error`` plus ``usage``,
         ``run_id``, and ``conversation_id`` for the UI and trace persistence.
@@ -636,7 +643,7 @@ class AppState:
             self._run_tokens[cell_id] = token
         try:
             return asyncio.run(
-                self._run_prompt_async(cell_id, source, token, on_trace, resume=resume)
+                self._run_prompt_async(cell_id, source, token, trace_steps, resume=resume)
             )
         except RunCancelled:
             self._finish_trace(cell_id, status="stopped")
@@ -664,7 +671,7 @@ class AppState:
                 self._cancelled.discard(cell_id)
 
     async def _run_prompt_async(
-        self, cell_id: str, source: str, token, on_trace, *, resume: dict | None = None
+        self, cell_id: str, source: str, token, trace_steps: list[dict], *, resume: dict | None = None
     ) -> dict:
         agent = current_agent()
         trace_path = self._trace_path(cell_id)
@@ -699,12 +706,25 @@ class AppState:
             async for event in events:
                 step = _event_to_step(event)
                 if step is not None:
-                    on_trace(step)
-                    if trace_path is not None:
-                        trace.append_step(trace_path, step)
-                    self.broadcast("trace", {"id": cell_id, "step": step})
+                    tool_call_id = step.get("tool_call_id")
+                    # A resumed run re-emits the deferred tool call it is
+                    # answering; that step is already in the trace, so only
+                    # its (new) result should be appended.
+                    replayed = (
+                        step.get("type") == "tool_call"
+                        and tool_call_id is not None
+                        and any(
+                            s.get("type") == "tool_call"
+                            and s.get("tool_call_id") == tool_call_id
+                            for s in trace_steps
+                        )
+                    )
+                    if not replayed:
+                        trace_steps.append(step)
+                        if trace_path is not None:
+                            trace.append_step(trace_path, step)
+                        self.broadcast("trace", {"id": cell_id, "step": step})
                     if self.settings.get("record_agent_steps", True):
-                        tool_call_id = step.get("tool_call_id")
                         if step.get("type") == "tool_call" and tool_call_id:
                             existing = self._recorded_tool_cell(tool_call_id)
                             recorded_tools[tool_call_id] = existing or self._record_tool_call(
@@ -721,7 +741,7 @@ class AppState:
                 ):
                     items = [i.model_dump(mode="json") for i in await plan_store.get_items()]
                     plan_step = {"type": "plan", "items": items}
-                    on_trace(plan_step)
+                    trace_steps.append(plan_step)
                     if trace_path is not None:
                         trace.append_step(trace_path, plan_step)
                     self.broadcast("trace", {"id": cell_id, "step": plan_step})
@@ -753,7 +773,7 @@ class AppState:
                             f"({type(exc).__name__}: {exc}). Retrying."
                         ),
                     }
-                    on_trace(note)
+                    trace_steps.append(note)
                     if trace_path is not None:
                         trace.append_step(trace_path, note)
                     self.broadcast("trace", {"id": cell_id, "step": note})
@@ -786,7 +806,7 @@ class AppState:
                         "conversation_id": result.conversation_id,
                     }
                 usage_step = {"type": "usage", "usage": usage}
-                on_trace(usage_step)
+                trace_steps.append(usage_step)
                 self.broadcast("trace", {"id": cell_id, "step": usage_step})
                 if trace_path is not None:
                     trace.append_step(trace_path, usage_step)

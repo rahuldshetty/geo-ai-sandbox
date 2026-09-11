@@ -1,11 +1,19 @@
 import asyncio
+import json
+import shutil
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
 from pydantic import ValidationError
 from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, DeferredToolResults
-from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models.function import FunctionModel
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+import geoai.agent as agent_module
+import geoai.server.state as state_module
 from geoai.server.state import _latest_plan_items, _ordered_notebook_cells
 from geoai.skills.interaction_tools import InteractionField, request_user_input
 
@@ -121,6 +129,83 @@ class InteractionToolTests(unittest.TestCase):
 
         resumed = asyncio.run(run_scenario())
         self.assertEqual(resumed.output, "Loaded selected imagery.")
+
+
+_FORM_ARGS = {
+    "title": "Choose imagery",
+    "prompt": "Pick a scene.",
+    "fields": [
+        {
+            "id": "scene",
+            "label": "Scene",
+            "type": "radio",
+            "options": [{"value": "post", "label": "Post-event", "recommended": True}],
+        }
+    ],
+}
+
+
+async def _interactive_stream(messages, info):  # noqa: ARG001 - FunctionModel contract
+    """Ask for input once, then answer after the deferred result arrives."""
+    for message in messages:
+        for part in getattr(message, "parts", []):
+            if (
+                isinstance(part, ToolReturnPart)
+                and part.tool_name == "request_user_input"
+            ):
+                yield "Loaded selected imagery."
+                return
+    yield {0: DeltaToolCall(name="request_user_input", json_args=json.dumps(_FORM_ARGS))}
+
+
+class PromptInteractionFlowTests(unittest.TestCase):
+    """Server-level pause/resume: the flow behind the browser interaction form."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="geoai-test-ws-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def _wait_for_status(self, app, cell_id, statuses, timeout=30.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            cell = next(c for c in app.cells if c["id"] == cell_id)
+            if cell["status"] in statuses:
+                return cell
+            time.sleep(0.05)
+        self.fail(f"cell stuck in {cell['status']!r}, expected one of {statuses}")
+
+    def test_prompt_run_pauses_for_input_and_resumes_with_answers(self):
+        with (
+            mock.patch.object(
+                agent_module,
+                "resolve_model",
+                lambda model: FunctionModel(stream_function=_interactive_stream),
+            ),
+            mock.patch.object(state_module, "workspace_root", lambda name: self.tmp / name),
+        ):
+            app = state_module.AppState()
+            app.new_workspace("interaction-flow")
+            cell = app.add_cell("prompt", "Load flood imagery")
+
+            app.run_cell(cell["id"])
+            waiting = self._wait_for_status(app, cell["id"], {"waiting_for_input"})
+
+            self.assertIsInstance(waiting.get("interaction"), dict)
+            self.assertEqual(waiting["interaction"]["title"], "Choose imagery")
+            self.assertEqual(waiting["interaction"]["fields"][0]["id"], "scene")
+
+            app.respond_interaction(
+                cell["id"], waiting["interaction"]["id"], {"scene": "post"}
+            )
+            done = self._wait_for_status(app, cell["id"], {"done", "error", "stopped"})
+
+            self.assertEqual(done["status"], "done")
+            self.assertEqual(done["outputs"][0]["text"], "Loaded selected imagery.")
+            self.assertIsNone(done.get("interaction"))
+            # The resumed run re-emits the deferred call; the trace must not
+            # grow a duplicate (permanently pending) tool_call entry.
+            calls = [s for s in done["trace"] if s.get("type") == "tool_call"]
+            self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
