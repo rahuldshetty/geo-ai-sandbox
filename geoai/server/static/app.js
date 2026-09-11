@@ -30,6 +30,7 @@ let iframeWorkspace = null;
 // -- DOM references --------------------------------------------------------
 
 const appEl = document.getElementById("app");
+const { renderMarkdown, visibleTraceGroups } = GeoAIRendering;
 
 function el(tag, attrs, children) {
   const node = document.createElement(tag);
@@ -55,87 +56,6 @@ function el(tag, attrs, children) {
 
 // -- helpers ---------------------------------------------------------------
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
-function inlineMarkdown(s) {
-  let t = escapeHtml(s);
-  t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  return t;
-}
-
-function renderMarkdown(src) {
-  const lines = String(src).split("\n");
-  let html = "";
-  let inCode = false;
-  let codeBuf = [];
-  let listBuf = [];
-  let listTag = null;
-
-  const flushList = () => {
-    if (listBuf.length) {
-      html +=
-        "<" +
-        listTag +
-        ">" +
-        listBuf.map((li) => "<li>" + li + "</li>").join("") +
-        "</" +
-        listTag +
-        ">";
-      listBuf = [];
-      listTag = null;
-    }
-  };
-
-  for (const line of lines) {
-    if (line.startsWith("```")) {
-      if (inCode) {
-        html += "<pre><code>" + escapeHtml(codeBuf.join("\n")) + "</code></pre>";
-        codeBuf = [];
-        inCode = false;
-      } else {
-        flushList();
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      codeBuf.push(line);
-      continue;
-    }
-    const li = line.match(/^\s*[-*]\s+(.*)$/);
-    const orderedLi = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (li || orderedLi) {
-      const nextListTag = orderedLi ? "ol" : "ul";
-      if (listTag && listTag !== nextListTag) flushList();
-      listTag = nextListTag;
-      listBuf.push(inlineMarkdown((li || orderedLi)[1]));
-      continue;
-    }
-    flushList();
-    if (/^######\s/.test(line)) html += "<h6>" + inlineMarkdown(line.replace(/^######\s/, "")) + "</h6>";
-    else if (/^#####\s/.test(line)) html += "<h5>" + inlineMarkdown(line.replace(/^#####\s/, "")) + "</h5>";
-    else if (/^####\s/.test(line)) html += "<h4>" + inlineMarkdown(line.replace(/^####\s/, "")) + "</h4>";
-    else if (/^###\s/.test(line)) html += "<h3>" + inlineMarkdown(line.replace(/^###\s/, "")) + "</h3>";
-    else if (/^##\s/.test(line)) html += "<h2>" + inlineMarkdown(line.replace(/^##\s/, "")) + "</h2>";
-    else if (/^#\s/.test(line)) html += "<h1>" + inlineMarkdown(line.replace(/^#\s/, "")) + "</h1>";
-    else if (/^>\s/.test(line)) html += "<blockquote>" + inlineMarkdown(line.replace(/^>\s/, "")) + "</blockquote>";
-    else if (line.trim() !== "") html += "<p>" + inlineMarkdown(line) + "</p>";
-  }
-  flushList();
-  if (inCode) {
-    html += "<pre><code>" + escapeHtml(codeBuf.join("\n")) + "</code></pre>";
-  }
-  return html;
-}
-
 function cellOutputText(cell) {
   const parts = [];
   for (const o of cell.outputs || []) {
@@ -147,16 +67,6 @@ function cellOutputText(cell) {
     }
   }
   return parts.join("\n");
-}
-
-function shouldRenderTraceText(cell) {
-  if (!cell || cell.status === "running" || cell.status === "waiting_for_input") {
-    return true;
-  }
-  // Once a prompt has a saved output, its streamed text is already represented
-  // by the output block below. Do not depend on the stream chunks matching the
-  // final response byte-for-byte.
-  return !cellOutputText(cell).trim();
 }
 
 function expandableContent(label, content, extraClass = "") {
@@ -939,12 +849,14 @@ function renderTraceSteps(trace, cell = null) {
   const history = (cell && cell.interaction_history) || [];
   const plan = planFromTrace(steps);
   if (plan) nodes.push(planNode(plan));
-  for (const group of groupTraceSteps(steps)) {
+  const groups = visibleTraceGroups(
+    groupTraceSteps(steps),
+    cell && cell.status,
+    Boolean(cell && cellOutputText(cell).trim())
+  );
+  for (const group of groups) {
     if (group.type === "text") {
-      // Completed prompt output is rendered once in the output block below.
-      if (shouldRenderTraceText(cell)) {
-        nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
-      }
+      nodes.push(traceTextNode(group.content));
     } else if (group.type === "tool") {
       const toolNode = toolStepNode(group);
       nodes.push(toolNode);
@@ -972,8 +884,6 @@ function renderTraceSteps(trace, cell = null) {
         if (completed) renderedInteractionIds.add(completed.id);
         else interactionRendered = true;
       }
-    } else if (group.type === "usage") {
-      nodes.push(usageNode(group.usage));
     }
   }
   if (
@@ -1127,17 +1037,6 @@ function planNode(items) {
   return details;
 }
 
-function usageNode(usage) {
-  const node = el("div", { class: "trace-step trace-usage" });
-  node.append(
-    el("span", { class: "trace-icon", text: "Σ" }),
-    el("span", { class: "trace-name", text: "Usage" })
-  );
-  const u = usage || {};
-  node.append(el("span", { class: "trace-preview", text: usageLabel(u), title: usageTitle(u) }));
-  return node;
-}
-
 function toolPreview(name, call, result, isCode) {
   if (name === "write_plan" && call) {
     const items = parsePlanItems(call.args);
@@ -1254,6 +1153,13 @@ function groupTraceSteps(trace) {
   return groups;
 }
 
+function traceTextNode(content) {
+  const node = el("div", { class: "trace-step trace-text markdown" });
+  node.dataset.source = content || "";
+  node.innerHTML = renderMarkdown(node.dataset.source);
+  return node;
+}
+
 function attachToolResult(node, result) {
   node.classList.remove("pending");
   const body = node.querySelector(".trace-body");
@@ -1278,13 +1184,14 @@ function appendTraceStep(container, step) {
   if (step.type === "text_delta") {
     const last = container.lastElementChild;
     if (last && last.classList.contains("trace-text")) {
-      last.textContent += step.content || "";
+      last.dataset.source = (last.dataset.source || "") + (step.content || "");
+      last.innerHTML = renderMarkdown(last.dataset.source);
       container.scrollTop = container.scrollHeight;
       return;
     }
-    container.append(el("div", { class: "trace-step trace-text", text: step.content || "" }));
+    container.append(traceTextNode(step.content));
   } else if (step.type === "text") {
-    container.append(el("div", { class: "trace-step trace-text", text: step.content || "" }));
+    container.append(traceTextNode(step.content));
   } else if (step.type === "tool_call") {
     const node = toolStepNode({ call: step, result: null });
     container.append(node);
@@ -1312,8 +1219,6 @@ function appendTraceStep(container, step) {
     } else {
       container.append(toolResultNode(step));
     }
-  } else if (step.type === "usage") {
-    container.append(usageNode(step.usage));
   }
   container.scrollTop = container.scrollHeight;
 }

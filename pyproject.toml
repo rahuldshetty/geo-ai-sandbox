@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "geo-ai"
 version = "0.0.1"
 description = "Geospatial-analysis agent in a custom web UI"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
   "python-dotenv",
   "pydantic-ai[openai,anthropic,google-gla]",
@@ -35,4 +35,4 @@ geo-ai = "geoai.server:run"
 include = ["geoai*"]
 
 [tool.setuptools.package-data]
-geoai = ["server/static/*"]
+geoai = ["server/static/*", "server/static/vendor/*"]

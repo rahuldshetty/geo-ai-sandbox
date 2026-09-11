@@ -675,14 +675,16 @@ button {
 }
 
 .cell-body .markdown,
-.cell-out-block .markdown {
+.cell-out-block .markdown,
+.trace-text.markdown {
   color: var(--text);
   line-height: 1.6;
   font-size: 13.5px;
 }
 
 .cell-body .markdown p,
-.cell-out-block .markdown p {
+.cell-out-block .markdown p,
+.trace-text.markdown p {
   margin: 0.5em 0;
 }
 
@@ -697,14 +699,21 @@ button {
 .cell-out-block .markdown h3,
 .cell-out-block .markdown h4,
 .cell-out-block .markdown h5,
-.cell-out-block .markdown h6 {
+.cell-out-block .markdown h6,
+.trace-text.markdown h1,
+.trace-text.markdown h2,
+.trace-text.markdown h3,
+.trace-text.markdown h4,
+.trace-text.markdown h5,
+.trace-text.markdown h6 {
   margin: 0.8em 0 0.4em;
   line-height: 1.25;
   color: var(--text);
 }
 
 .cell-body .markdown code,
-.cell-out-block .markdown code {
+.cell-out-block .markdown code,
+.trace-text.markdown code {
   font-family: var(--font-mono);
   font-size: 0.92em;
   background: var(--surface-3);
@@ -713,7 +722,8 @@ button {
 }
 
 .cell-body .markdown pre,
-.cell-out-block .markdown pre {
+.cell-out-block .markdown pre,
+.trace-text.markdown pre {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -722,13 +732,15 @@ button {
 }
 
 .cell-body .markdown pre code,
-.cell-out-block .markdown pre code {
+.cell-out-block .markdown pre code,
+.trace-text.markdown pre code {
   background: transparent;
   padding: 0;
 }
 
 .cell-body .markdown blockquote,
-.cell-out-block .markdown blockquote {
+.cell-out-block .markdown blockquote,
+.trace-text.markdown blockquote {
   margin: 0.5em 0;
   padding: 2px 12px;
   border-left: 3px solid var(--border-strong);
@@ -738,9 +750,30 @@ button {
 .cell-body .markdown ul,
 .cell-body .markdown ol,
 .cell-out-block .markdown ul,
-.cell-out-block .markdown ol {
+.cell-out-block .markdown ol,
+.trace-text.markdown ul,
+.trace-text.markdown ol {
   margin: 0.4em 0;
   padding-left: 20px;
+}
+
+.markdown table {
+  width: 100%;
+  margin: 0.7em 0;
+  border-collapse: collapse;
+  font-size: 0.95em;
+}
+
+.markdown th,
+.markdown td {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.markdown th {
+  background: var(--surface-3);
+  font-weight: 700;
 }
 
 .cell-out {
@@ -901,7 +934,6 @@ button {
   font-size: 12.5px;
   line-height: 1.55;
   color: var(--text);
-  white-space: pre-wrap;
 }
 .trace-step.trace-plan {
   border-left: 3px solid var(--warn);
@@ -943,17 +975,6 @@ button {
   margin-top: 10px;
   border-top: 1px dashed var(--border);
   padding-top: 10px;
-}
-
-.trace-step.trace-usage {
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--success);
-  background: var(--surface-2);
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 7px 9px;
-  font-size: 12px;
 }
 
 .plan-progress {
