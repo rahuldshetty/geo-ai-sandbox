@@ -149,10 +149,14 @@ function cellOutputText(cell) {
   return parts.join("\n");
 }
 
-function isFinalTraceText(group, cell) {
-  if (!cell || group.type !== "text") return false;
-  const output = cellOutputText(cell).trim();
-  return Boolean(output) && group.content.trim() === output;
+function shouldRenderTraceText(cell) {
+  if (!cell || cell.status === "running" || cell.status === "waiting_for_input") {
+    return true;
+  }
+  // Once a prompt has a saved output, its streamed text is already represented
+  // by the output block below. Do not depend on the stream chunks matching the
+  // final response byte-for-byte.
+  return !cellOutputText(cell).trim();
 }
 
 function expandableContent(label, content, extraClass = "") {
@@ -937,9 +941,8 @@ function renderTraceSteps(trace, cell = null) {
   if (plan) nodes.push(planNode(plan));
   for (const group of groupTraceSteps(steps)) {
     if (group.type === "text") {
-      // The completed response is also stored in the cell output. Keep any
-      // intermediate text trace, but do not show that final response twice.
-      if (!isFinalTraceText(group, cell)) {
+      // Completed prompt output is rendered once in the output block below.
+      if (shouldRenderTraceText(cell)) {
         nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
       }
     } else if (group.type === "tool") {
