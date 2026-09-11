@@ -11,6 +11,7 @@ dependencies = [
   "python-dotenv",
   "pydantic-ai[openai,anthropic,google-gla]",
   "pydantic-ai-harness>=0.24.0",
+  "geolibre",
   "rasterio",
   "rioxarray",
   "geopandas",
@@ -28,5 +29,11 @@ dependencies = [
 [project.optional-dependencies]
 gdal = ["gdal"]
 
+[project.scripts]
+geo-ai = "geoai.server:run"
+
 [tool.setuptools.packages.find]
 include = ["geoai*"]
+
+[tool.setuptools.package-data]
+geoai = ["server/static/*"]

@@ -1,0 +1,68 @@
+# Route B build: Geo-AI as a single Linux AppImage.
+#
+# PyInstaller one-dir bundle built inside manylinux_2_28 (glibc 2.28) so the
+# artifact runs on any distro from ~2019 on. The AppImage wrapper is produced
+# with appimagetool in --appimage-extract-and-run mode (no FUSE needed in the
+# container).
+#
+#   docker build -f packaging/Dockerfile.build --output dist .
+#
+# Output: dist/geo-ai-<version>-x86_64.AppImage
+
+FROM quay.io/pypa/manylinux_2_28_x86_64 AS build
+
+# PyInstaller requires a shared libpython; manylinux's bundled CPython is
+# built static, so provision a python-build-standalone interpreter via uv.
+# UV_PYTHON_PREFERENCE=only-managed stops uv from linking the venv to the
+# (static) manylinux CPython it would otherwise discover first.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    UV_PYTHON_PREFERENCE=only-managed
+
+WORKDIR /build
+
+# Deps first so the (slow) install layer stays cached while sources churn.
+COPY pyproject.toml ./
+COPY geoai/ geoai/
+COPY app.py ./
+
+RUN uv venv --python 3.12 /opt/venv \
+    && uv pip install --python /opt/venv/bin/python . pyinstaller
+
+ENV PATH=/opt/venv/bin:$PATH
+
+# Fail early and clearly if the interpreter lacks a shared libpython.
+RUN python -c "import pathlib, sysconfig; lib = pathlib.Path(sysconfig.get_config_var('LIBDIR')) / 'libpython3.12.so.1.0'; assert lib.exists(), 'shared libpython missing at ' + str(lib)"
+
+COPY . .
+
+RUN pyinstaller packaging/geo-ai.spec \
+        --noconfirm --distpath dist --workpath build-pyi
+
+# AppDir layout: the PyInstaller bundle lives under usr/lib and usr/bin/geo-ai
+# is a real executable (Exec= must not point at a directory). The desktop file
+# goes to the AppDir root (appimagetool's primary lookup) and to
+# usr/share/applications (freedesktop convention).
+RUN mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications \
+        AppDir/usr/share/icons/hicolor/128x128/apps \
+    && cp -r dist/geo-ai AppDir/usr/lib/geo-ai \
+    && cp packaging/geo-ai.desktop AppDir/geo-ai.desktop \
+    && cp packaging/geo-ai.desktop AppDir/usr/share/applications/geo-ai.desktop \
+    && cp packaging/icon.png AppDir/geo-ai.png \
+    && cp packaging/icon.png AppDir/usr/share/icons/hicolor/128x128/apps/geo-ai.png \
+    && ln -s geo-ai.png AppDir/.DirIcon
+
+COPY packaging/geo-ai.sh AppDir/usr/bin/geo-ai
+COPY packaging/AppRun AppDir/AppRun
+RUN chmod +x AppDir/usr/bin/geo-ai AppDir/AppRun
+
+RUN APPIMAGETOOL=/tmp/appimagetool \
+    && curl -fsSL -o "$APPIMAGETOOL" \
+        https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage \
+    && chmod +x "$APPIMAGETOOL" \
+    && VERSION=$(python -c \
+        "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])") \
+    && "$APPIMAGETOOL" --appimage-extract-and-run AppDir "geo-ai-${VERSION}-x86_64.AppImage"
+FROM scratch AS artifacts
+COPY --from=build /build/*.AppImage /

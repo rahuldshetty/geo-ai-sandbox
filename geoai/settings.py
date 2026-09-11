@@ -1,4 +1,4 @@
-"""App-level user settings persisted to ``<repo>/settings.json``.
+"""App-level user settings persisted to ``<app_root>/settings.json``.
 
 Settings are runtime-editable (the Settings dialog): model and UI theme.
 Environment variables seed the first-run defaults; once a value is
@@ -10,11 +10,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from .config import DEFAULT_MODEL, max_retries, model_from_env
-
-SETTINGS_FILE = Path(__file__).resolve().parent.parent / "settings.json"
+from .config import DEFAULT_MODEL, app_root, max_retries, model_from_env
 
 _THEMES = ("light", "dark")
+
+
+def settings_path() -> Path:
+    """Return the settings file location.
+
+    Resolved at call time so a ``GEOAI_HOME`` loaded from ``.env`` is honored.
+    """
+    return app_root() / "settings.json"
 
 
 def _defaults() -> dict:
@@ -29,9 +35,10 @@ def _defaults() -> dict:
 def load_settings() -> dict:
     """Return the merged settings (env defaults overlaid by the file)."""
     settings = _defaults()
-    if SETTINGS_FILE.exists():
+    path = settings_path()
+    if path.exists():
         try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             data = {}
         if isinstance(data, dict):
@@ -45,8 +52,9 @@ def load_settings() -> dict:
 def save_settings(settings: dict) -> dict:
     """Normalize and persist ``settings``; return the normalized dict."""
     normalized = _normalize(settings)
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(
+    path = settings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
         json.dumps(normalized, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
     return normalized
