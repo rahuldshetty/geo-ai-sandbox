@@ -485,6 +485,10 @@ button {
   background: var(--surface-2);
 }
 
+.interaction-form.submitted {
+  border-color: var(--border);
+}
+
 .trace > .interaction-form {
   margin: 0;
 }
@@ -560,6 +564,13 @@ button {
   min-height: 18px;
   color: var(--error);
   font-size: 12px;
+}
+
+.interaction-submitted {
+  margin-top: 8px;
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .interaction-actions {

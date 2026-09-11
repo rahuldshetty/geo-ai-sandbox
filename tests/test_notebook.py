@@ -134,6 +134,25 @@ class NotebookSerializationTests(unittest.TestCase):
         self.assertEqual(restored["status"], "waiting_for_input")
         self.assertEqual(restored["interaction"]["id"], "interaction-1")
 
+    def test_submitted_interaction_history_survives_prompt_round_trip(self):
+        prompt = new_cell("prompt", "Load the best flood imagery.")
+        submitted = {
+            "id": "interaction-1",
+            "tool_call_id": "call-1",
+            "title": "Choose imagery",
+            "prompt": "Several scenes are available.",
+            "fields": [],
+            "answers": {"scene": "post"},
+            "submitted": True,
+        }
+        prompt["status"] = "done"
+        prompt["interaction_history"] = [submitted]
+
+        restored = nb_to_cell(cell_to_nb(prompt))
+
+        self.assertEqual(restored["status"], "done")
+        self.assertEqual(restored["interaction_history"], [submitted])
+
     def test_persistent_interaction_cell_keeps_form_and_answers(self):
         interaction = {
             "id": "interaction-1",

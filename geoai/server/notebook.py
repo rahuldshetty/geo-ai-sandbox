@@ -123,6 +123,7 @@ def cell_to_nb(cell: dict) -> dict:
                 "kind": "prompt",
                 "execution_count": cell.get("execution_count"),
                 "status": cell.get("status", "idle"),
+                "interaction_history": cell.get("interaction_history", []),
             }
         )
         return {
@@ -200,6 +201,8 @@ def nb_to_cell(nb_cell: dict) -> dict:
     if kind == "prompt" and isinstance(geoai.get("interaction"), dict):
         cell["interaction"] = geoai["interaction"]
         cell["status"] = "waiting_for_input"
+    if kind == "prompt" and isinstance(geoai.get("interaction_history"), list):
+        cell["interaction_history"] = geoai["interaction_history"]
     if kind == "interaction":
         if isinstance(geoai.get("interaction"), dict):
             cell["interaction"] = geoai["interaction"]

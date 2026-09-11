@@ -202,6 +202,7 @@ class PromptInteractionFlowTests(unittest.TestCase):
             self.assertEqual(done["status"], "done")
             self.assertEqual(done["outputs"][0]["text"], "Loaded selected imagery.")
             self.assertIsNone(done.get("interaction"))
+            self.assertEqual(done["interaction_history"][0]["answers"], {"scene": "post"})
             # The resumed run re-emits the deferred call; the trace must not
             # grow a duplicate (permanently pending) tool_call entry.
             calls = [s for s in done["trace"] if s.get("type") == "tool_call"]

@@ -532,6 +532,7 @@ class AppState:
             cell["conversation_id"] = None
             # A fresh run supersedes any interaction left pending by a prior run.
             cell["interaction"] = None
+            cell["interaction_history"] = []
             cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
             self.provenance_cells = [
                 recorded
@@ -913,6 +914,10 @@ class AppState:
             self._record_interaction_response(cell_id, interaction, answers)
             cell["status"] = "running"
             cell["interaction"] = None
+            completed = dict(interaction)
+            completed["answers"] = answers
+            completed["submitted"] = True
+            cell.setdefault("interaction_history", []).append(completed)
             cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
             with self._run_tokens_lock:
                 self._resume_payloads[cell_id] = payload

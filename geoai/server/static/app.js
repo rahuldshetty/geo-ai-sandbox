@@ -699,9 +699,13 @@ function renderCell(cell) {
   return box;
 }
 
-function renderInteraction(cell) {
-  const request = cell.interaction;
-  const form = el("form", { class: "interaction-form" });
+function renderInteraction(cell, interaction = cell.interaction) {
+  const request = interaction;
+  const submitted = request.submitted === true;
+  const answers = request.answers || {};
+  const form = el(submitted ? "div" : "form", {
+    class: "interaction-form" + (submitted ? " submitted" : ""),
+  });
   form.append(
     el("h4", { text: request.title || "Input required" }),
     el("p", { class: "interaction-prompt", text: request.prompt || "" })
@@ -718,13 +722,22 @@ function renderInteraction(cell) {
       const input = el("input", {
         type: "text",
         placeholder: field.placeholder || "",
-        value: field.default == null ? "" : String(field.default),
+        value:
+          submitted && answers[field.id] != null
+            ? String(answers[field.id])
+            : field.default == null
+              ? ""
+              : String(field.default),
       });
+      input.disabled = submitted;
       controls.set(field.id, { field, nodes: [input] });
       group.append(input);
     } else if (field.type === "confirmation") {
       const input = el("input", { type: "checkbox" });
-      input.checked = Boolean(field.default);
+      input.checked = submitted
+        ? Boolean(answers[field.id])
+        : Boolean(field.default);
+      input.disabled = submitted;
       const option = el("label", { class: "interaction-option compact" });
       option.append(input, el("span", { text: field.description || "Yes" }));
       controls.set(field.id, { field, nodes: [input] });
@@ -737,10 +750,15 @@ function renderInteraction(cell) {
           name: "interaction-" + request.id + "-" + field.id,
           value: option.value,
         });
-        const selected = Array.isArray(field.default)
-          ? field.default.includes(option.value)
-          : field.default === option.value || (!field.default && option.recommended);
+        const selected = submitted
+          ? Array.isArray(answers[field.id])
+            ? answers[field.id].includes(option.value)
+            : answers[field.id] === option.value
+          : Array.isArray(field.default)
+            ? field.default.includes(option.value)
+            : field.default === option.value || (!field.default && option.recommended);
         input.checked = selected;
+        input.disabled = submitted;
         const card = el("label", {
           class: "interaction-option" + (option.thumbnail_url ? " with-thumbnail" : ""),
         });
@@ -759,6 +777,10 @@ function renderInteraction(cell) {
       controls.set(field.id, { field, nodes });
     }
     form.append(group);
+  }
+  if (submitted) {
+    form.append(el("div", { class: "interaction-submitted", text: "Selection submitted" }));
+    return form;
   }
   const error = el("div", { class: "interaction-error" });
   const submit = el("button", {
@@ -812,6 +834,11 @@ function renderInteraction(cell) {
         interaction_id: request.id,
         answers,
       });
+      const completed = { ...request, answers, submitted: true };
+      const history = cell.interaction_history || [];
+      if (!history.some((item) => item.id === completed.id)) {
+        cell.interaction_history = [...history, completed];
+      }
       cell.status = "running";
       cell.interaction = null;
       renderCellsOnly();
@@ -879,6 +906,8 @@ function renderTraceSteps(trace, cell = null) {
   const steps = trace || [];
   const nodes = [];
   let interactionRendered = false;
+  const renderedInteractionIds = new Set();
+  const history = (cell && cell.interaction_history) || [];
   const plan = planFromTrace(steps);
   if (plan) nodes.push(planNode(plan));
   for (const group of groupTraceSteps(steps)) {
@@ -888,21 +917,28 @@ function renderTraceSteps(trace, cell = null) {
       const toolNode = toolStepNode(group);
       nodes.push(toolNode);
       const call = group.call;
-      if (
-        cell &&
+      const completed = call &&
+        history.find((item) => item.tool_call_id === call.tool_call_id);
+      const pending = cell &&
         cell.status === "waiting_for_input" &&
         cell.interaction &&
         call &&
-        call.tool_call_id === cell.interaction.tool_call_id
-      ) {
+        call.tool_call_id === cell.interaction.tool_call_id;
+      if (completed || pending) {
         toolNode.classList.remove("pending");
-        toolNode.classList.add("waiting");
+        if (pending) toolNode.classList.add("waiting");
         const summary = toolNode.querySelector("summary");
         if (summary) {
-          summary.append(el("span", { class: "trace-input-required", text: "input required" }));
+          summary.append(
+            el("span", {
+              class: "trace-input-required",
+              text: pending ? "input required" : "input provided",
+            })
+          );
         }
-        nodes.push(renderInteraction(cell));
-        interactionRendered = true;
+        nodes.push(renderInteraction(cell, completed || cell.interaction));
+        if (completed) renderedInteractionIds.add(completed.id);
+        else interactionRendered = true;
       }
     } else if (group.type === "usage") {
       nodes.push(usageNode(group.usage));
@@ -915,6 +951,11 @@ function renderTraceSteps(trace, cell = null) {
     !interactionRendered
   ) {
     nodes.push(renderInteraction(cell));
+  }
+  for (const completed of history) {
+    if (!renderedInteractionIds.has(completed.id)) {
+      nodes.push(renderInteraction(cell, completed));
+    }
   }
   return nodes;
 }
