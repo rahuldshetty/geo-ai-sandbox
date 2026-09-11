@@ -77,11 +77,20 @@ function renderMarkdown(src) {
   let inCode = false;
   let codeBuf = [];
   let listBuf = [];
+  let listTag = null;
 
   const flushList = () => {
     if (listBuf.length) {
-      html += "<ul>" + listBuf.map((li) => "<li>" + li + "</li>").join("") + "</ul>";
+      html +=
+        "<" +
+        listTag +
+        ">" +
+        listBuf.map((li) => "<li>" + li + "</li>").join("") +
+        "</" +
+        listTag +
+        ">";
       listBuf = [];
+      listTag = null;
     }
   };
 
@@ -102,8 +111,12 @@ function renderMarkdown(src) {
       continue;
     }
     const li = line.match(/^\s*[-*]\s+(.*)$/);
-    if (li) {
-      listBuf.push(inlineMarkdown(li[1]));
+    const orderedLi = line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (li || orderedLi) {
+      const nextListTag = orderedLi ? "ol" : "ul";
+      if (listTag && listTag !== nextListTag) flushList();
+      listTag = nextListTag;
+      listBuf.push(inlineMarkdown((li || orderedLi)[1]));
       continue;
     }
     flushList();
@@ -134,6 +147,12 @@ function cellOutputText(cell) {
     }
   }
   return parts.join("\n");
+}
+
+function isFinalTraceText(group, cell) {
+  if (!cell || group.type !== "text") return false;
+  const output = cellOutputText(cell).trim();
+  return Boolean(output) && group.content.trim() === output;
 }
 
 function expandableContent(label, content, extraClass = "") {
@@ -678,7 +697,13 @@ function renderCell(cell) {
     const outBlock = el("div", { class: "cell-out-block" });
     const text = cellOutputText(cell);
     if (text) {
-      outBlock.append(el("pre", { class: cell.status === "error" ? "error" : "", text }));
+      if (cell.status === "error") {
+        outBlock.append(el("pre", { class: "error", text }));
+      } else {
+        const markdown = el("div", { class: "markdown" });
+        markdown.innerHTML = renderMarkdown(text);
+        outBlock.append(markdown);
+      }
     }
     box.append(outBlock);
   } else if (kind === "tool") {
@@ -912,7 +937,11 @@ function renderTraceSteps(trace, cell = null) {
   if (plan) nodes.push(planNode(plan));
   for (const group of groupTraceSteps(steps)) {
     if (group.type === "text") {
-      nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
+      // The completed response is also stored in the cell output. Keep any
+      // intermediate text trace, but do not show that final response twice.
+      if (!isFinalTraceText(group, cell)) {
+        nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
+      }
     } else if (group.type === "tool") {
       const toolNode = toolStepNode(group);
       nodes.push(toolNode);

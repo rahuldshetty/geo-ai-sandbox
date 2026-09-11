@@ -674,13 +674,15 @@ button {
   box-shadow: 0 0 0 3px var(--primary-soft);
 }
 
-.cell-body .markdown {
+.cell-body .markdown,
+.cell-out-block .markdown {
   color: var(--text);
   line-height: 1.6;
   font-size: 13.5px;
 }
 
-.cell-body .markdown p {
+.cell-body .markdown p,
+.cell-out-block .markdown p {
   margin: 0.5em 0;
 }
 
@@ -689,13 +691,20 @@ button {
 .cell-body .markdown h3,
 .cell-body .markdown h4,
 .cell-body .markdown h5,
-.cell-body .markdown h6 {
+.cell-body .markdown h6,
+.cell-out-block .markdown h1,
+.cell-out-block .markdown h2,
+.cell-out-block .markdown h3,
+.cell-out-block .markdown h4,
+.cell-out-block .markdown h5,
+.cell-out-block .markdown h6 {
   margin: 0.8em 0 0.4em;
   line-height: 1.25;
   color: var(--text);
 }
 
-.cell-body .markdown code {
+.cell-body .markdown code,
+.cell-out-block .markdown code {
   font-family: var(--font-mono);
   font-size: 0.92em;
   background: var(--surface-3);
@@ -703,7 +712,8 @@ button {
   border-radius: 4px;
 }
 
-.cell-body .markdown pre {
+.cell-body .markdown pre,
+.cell-out-block .markdown pre {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -711,19 +721,24 @@ button {
   overflow-x: auto;
 }
 
-.cell-body .markdown pre code {
+.cell-body .markdown pre code,
+.cell-out-block .markdown pre code {
   background: transparent;
   padding: 0;
 }
 
-.cell-body .markdown blockquote {
+.cell-body .markdown blockquote,
+.cell-out-block .markdown blockquote {
   margin: 0.5em 0;
   padding: 2px 12px;
   border-left: 3px solid var(--border-strong);
   color: var(--text-2);
 }
 
-.cell-body .markdown ul {
+.cell-body .markdown ul,
+.cell-body .markdown ol,
+.cell-out-block .markdown ul,
+.cell-out-block .markdown ol {
   margin: 0.4em 0;
   padding-left: 20px;
 }
