@@ -10,9 +10,10 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field as PydanticField
 
 from ..config import list_workspaces
+from ..geolibre_bridge import update_bridge
 from ..workspace import WorkspaceError
 from .state import state
 
@@ -62,16 +63,39 @@ class UpdateSettings(BaseModel):
     theme: str | None = None
     dangerous_mode: bool | None = None
     max_retries: int | None = None
+    record_agent_steps: bool | None = None
+
+
+class InteractionResponse(BaseModel):
+    interaction_id: str
+    answers: dict
+
+
+class GeoLibreBridgeHandshake(BaseModel):
+    version: str | None = None
+    methods: list[str] = PydanticField(default_factory=list)
 
 # -- static -----------------------------------------------------------------
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Serve the local app shell without retaining stale frontend bundles."""
+
+    async def get_response(self, path: str, scope: dict) -> Response:
+        response = await super().get_response(path, scope)
+        response.headers["Cache-Control"] = "no-store"
+        return response
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(
+        STATIC_DIR / "index.html",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 
 
 # -- workspace files ---------------------------------------------------------
@@ -126,6 +150,11 @@ def api_update_settings(body: UpdateSettings) -> dict:
     settings = state.update_settings(patch)
     state.broadcast("settings", {"settings": settings})
     return settings
+
+
+@app.post("/api/geolibre/bridge")
+def api_geolibre_bridge(body: GeoLibreBridgeHandshake) -> dict:
+    return update_bridge(body.version, body.methods)
 
 # -- workspace ---------------------------------------------------------------
 
@@ -225,6 +254,28 @@ def api_stop_cell(cell_id: str) -> dict:
     # token registry (its own lock) and cancels the agent via a thread-safe
     # CancellationToken.
     return {"stopped": state.stop_cell(cell_id)}
+
+
+@app.post("/api/cells/{cell_id}/interaction")
+def api_respond_interaction(cell_id: str, body: InteractionResponse) -> dict:
+    try:
+        state.respond_interaction(cell_id, body.interaction_id, body.answers)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="cell not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"accepted": True}
+
+
+@app.delete("/api/cells/{cell_id}/interaction/{interaction_id}")
+def api_cancel_interaction(cell_id: str, interaction_id: str) -> dict:
+    try:
+        state.cancel_interaction(cell_id, interaction_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="cell not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {"cancelled": True}
 
 @app.post("/api/run-all")
 def api_run_all() -> dict:

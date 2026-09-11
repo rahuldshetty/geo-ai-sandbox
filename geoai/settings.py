@@ -23,6 +23,7 @@ def _defaults() -> dict:
         "theme": "light",
         "dangerous_mode": False,
         "max_retries": max_retries(),
+        "record_agent_steps": True,
     }
 
 def load_settings() -> dict:
@@ -64,4 +65,5 @@ def _normalize(settings: dict) -> dict:
         "theme": theme,
         "dangerous_mode": bool(settings.get("dangerous_mode", False)),
         "max_retries": max(1, retries),
+        "record_agent_steps": bool(settings.get("record_agent_steps", True)),
     }

@@ -81,18 +81,24 @@ def download(url: str, filename: str) -> str:
     name = Path(filename).name
     out = ctx.workspace.resolve_under(ctx.workspace.data, name)
     out.parent.mkdir(parents=True, exist_ok=True)
+    partial = out.with_name(out.name + ".part")
 
     req = urllib.request.Request(url, headers={"User-Agent": "geo-ai-harness"})
-    with urllib.request.urlopen(req) as resp, open(out, "wb") as fh:
-        total = 0
-        while True:
-            chunk = resp.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > _MAX_DOWNLOAD_BYTES:
-                raise ValueError(f"download exceeds the 2 GB cap: {url!r}")
-            fh.write(chunk)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp, open(partial, "wb") as fh:
+            total = 0
+            while True:
+                chunk = resp.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_DOWNLOAD_BYTES:
+                    raise ValueError(f"download exceeds the 2 GB cap: {url!r}")
+                fh.write(chunk)
+        partial.replace(out)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
 
     rel = out.relative_to(ctx.workspace.root).as_posix()
     ctx.workspace.record_output(rel)

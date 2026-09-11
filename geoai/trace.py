@@ -1,9 +1,10 @@
 """Agent trace persistence: append-only JSONL under ``<workspace>/traces/``.
 
 Each prompt-cell run writes one JSONL file named ``<cell_id>.jsonl``. A run
-writes four record kinds, one JSON object per line:
+writes these record kinds, one JSON object per line:
 
     {"type": "run",      "ts", "cell_id", "run_id", "model", "prompt"}
+    {"type": "resume",   "ts", "run_id", "conversation_id", "response"}
     {"type": "step",     "step": {...}}                 # one UI trace step
     {"type": "result",   "ts", "status", "output", "error", "usage", "conversation_id"}
     {"type": "messages", "messages": [...]}             # new_messages, JSON-able
@@ -56,6 +57,27 @@ def write_run(
             "run_id": run_id,
             "model": model,
             "prompt": prompt,
+        },
+    )
+
+
+def append_resume(
+    path: Path,
+    *,
+    run_id: str,
+    conversation_id: str | None,
+    response: dict[str, Any],
+    ts: str | None = None,
+) -> None:
+    """Record a resumed run after an external user interaction."""
+    _append(
+        path,
+        {
+            "type": "resume",
+            "ts": ts or now_iso(),
+            "run_id": run_id,
+            "conversation_id": conversation_id,
+            "response": response,
         },
     )
 
@@ -175,11 +197,12 @@ def read_trace(path: Path, *, include_messages: bool = True) -> dict[str, Any]:
 
 
 def read_messages(path: Path) -> list[ModelMessage]:
-    """Return the ``new_messages`` persisted in ``path`` ([] when absent)."""
+    """Return the latest persisted conversation payload ([] when absent)."""
+    messages: list[ModelMessage] = []
     for rec in _iter_records(path):
         if rec.get("type") == "messages":
-            return _messages_from_jsonable(rec.get("messages") or [])
-    return []
+            messages = _messages_from_jsonable(rec.get("messages") or [])
+    return messages
 
 
 def _messages_from_jsonable(records: list[Any]) -> list[ModelMessage]:

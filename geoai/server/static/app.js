@@ -10,7 +10,13 @@ const state = {
   map_app_url: null,
   files: [],
   selected_tab: "Cells",
-  settings: { model: "", theme: "light", dangerous_mode: false, max_retries: 5 },
+  settings: {
+    model: "",
+    theme: "light",
+    dangerous_mode: false,
+    max_retries: 5,
+    record_agent_steps: true,
+  },
 };
 
 // -- map bridge state ------------------------------------------------------
@@ -130,6 +136,20 @@ function cellOutputText(cell) {
   return parts.join("\n");
 }
 
+function expandableContent(label, content, extraClass = "") {
+  const text = String(content == null ? "" : content);
+  const details = el("details", {
+    class: "agent-action-content" + (extraClass ? " " + extraClass : ""),
+  });
+  const summary = el("summary", {});
+  summary.append(
+    el("strong", { text: label }),
+    el("span", { class: "agent-action-preview", text: compactPreview(text) })
+  );
+  details.append(summary, el("pre", { text }));
+  return details;
+}
+
 function canonical(v) {
   if (Array.isArray(v)) return v.map(canonical);
   if (v && typeof v === "object") {
@@ -183,16 +203,31 @@ async function loadState() {
   const snap = await api("GET", "/api/state");
   applySnapshot(snap);
   render();
+  const pending = state.cells.find(
+    (cell) => cell.status === "waiting_for_input" && cell.interaction
+  );
+  if (pending) revealInteraction(pending.id);
+}
+
+function isGeneratedCell(cell) {
+  const geoai = (cell && cell.metadata && cell.metadata.geoai) || {};
+  return Boolean(geoai.generated || geoai.kind === "interaction");
 }
 
 function applySnapshot(snap) {
   state.active_workspace = snap.active_workspace;
   state.workspaces = snap.workspaces || [];
-  state.cells = snap.cells || [];
+  state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
-  state.settings = snap.settings || { model: "", theme: "light", dangerous_mode: false, max_retries: 5 };
+  state.settings = snap.settings || {
+    model: "",
+    theme: "light",
+    dangerous_mode: false,
+    max_retries: 5,
+    record_agent_steps: true,
+  };
   applyTheme();
 }
 
@@ -250,6 +285,10 @@ function attachBridge() {
 
     if (data.type === "geolibre:ready") {
       mapReady = true;
+      api("POST", "/api/geolibre/bridge", {
+        version: data.version || null,
+        methods: ["project.load", "project.request_state"],
+      }).catch(() => {});
       postProject();
     } else if (data.type === "geolibre:state") {
       lastRemoteProject = data.project;
@@ -486,10 +525,15 @@ function renderCellsTab() {
 
 function renderCell(cell) {
   const kind = cell.kind;
-  const box = el("div", { class: "cell", "data-cell-id": cell.id });
+  const geoai = (cell.metadata && cell.metadata.geoai) || {};
+  const generated = Boolean(geoai.generated);
+  const box = el("div", {
+    class: "cell" + (generated ? " generated-cell" : ""),
+    "data-cell-id": cell.id,
+  });
 
   const header = el("div", { class: "cell-header" });
-  if (kind !== "markdown") {
+  if (kind !== "markdown" && kind !== "tool" && cell.status !== "waiting_for_input") {
     if (cell.status === "running" && kind === "prompt") {
       header.append(
         el("button", {
@@ -516,12 +560,51 @@ function renderCell(cell) {
       text: "In[" + (cell.execution_count != null ? cell.execution_count : " ") + "]",
     })
   );
-  header.append(el("span", { class: "badge", text: kind === "markdown" ? "md" : kind === "prompt" ? "prompt" : "py" }));
+  const badge =
+    kind === "tool"
+      ? "agent tool"
+      : geoai.kind === "response"
+        ? "agent response"
+        : geoai.kind === "interaction_response"
+          ? "user choice"
+        : kind === "markdown"
+          ? "md"
+          : kind === "prompt"
+            ? "prompt"
+            : "py";
+  header.append(el("span", { class: "badge", text: badge }));
+  if (kind === "tool") {
+    header.append(
+      el("span", {
+        class: "agent-action-name",
+        text: geoai.tool_name || "tool",
+      }),
+      el("span", {
+        class: "agent-action-status status-" + (cell.status || "idle"),
+        text:
+          cell.status === "waiting_for_input"
+            ? "waiting"
+            : cell.status === "running"
+              ? "running"
+              : cell.status === "error"
+                ? "failed"
+                : cell.status === "done"
+                  ? "done"
+                  : "",
+      })
+    );
+  }
   header.append(el("span", { class: "spacer" }));
 
   if (kind === "markdown") {
+    if (!generated) {
+      header.append(
+        el("button", { class: "icon", text: "edit", title: "Edit", onclick: () => editMarkdown(cell) }),
+        el("button", { class: "icon", text: "✕", title: "Delete", onclick: () => deleteCell(cell.id) })
+      );
+    }
+  } else if (kind === "tool") {
     header.append(
-      el("button", { class: "icon", text: "edit", title: "Edit", onclick: () => editMarkdown(cell) }),
       el("button", { class: "icon", text: "✕", title: "Delete", onclick: () => deleteCell(cell.id) })
     );
   } else {
@@ -538,23 +621,33 @@ function renderCell(cell) {
     const md = el("div", { class: "markdown" });
     md.innerHTML = renderMarkdown(cell.source);
     body.append(md);
+  } else if (kind === "tool") {
+    const input =
+      geoai.args === undefined
+        ? cell.source
+        : JSON.stringify(geoai.args, null, 2);
+    body.append(expandableContent("Input", input));
   } else {
     const ta = el("textarea", {
       rows: Math.min(12, Math.max(2, cell.source.split("\n").length)),
     });
     ta.value = cell.source;
-    ta.addEventListener("input", () => {
-      const idx = state.cells.findIndex((c) => c.id === cell.id);
-      if (idx >= 0) state.cells[idx].source = ta.value;
-    });
-    ta.addEventListener("blur", () => {
-      updateCell(cell.id, ta.value);
-    });
+    if (generated) {
+      ta.readOnly = true;
+    } else {
+      ta.addEventListener("input", () => {
+        const idx = state.cells.findIndex((c) => c.id === cell.id);
+        if (idx >= 0) state.cells[idx].source = ta.value;
+      });
+      ta.addEventListener("blur", () => {
+        updateCell(cell.id, ta.value);
+      });
+    }
     body.append(ta);
   }
   box.append(body);
 
-  if (kind !== "markdown") {
+  if (kind !== "markdown" && kind !== "tool") {
     const outRow = el("div", { class: "cell-out" });
     outRow.append(
       el("span", {
@@ -564,6 +657,8 @@ function renderCell(cell) {
     );
     if (cell.status === "running") {
       outRow.append(el("span", { class: "running", text: "running…" }));
+    } else if (cell.status === "waiting_for_input") {
+      outRow.append(el("span", { class: "running waiting", text: "waiting for input" }));
     } else if (cell.status === "stopped") {
       outRow.append(el("span", { class: "running stopped", text: "stopped" }));
     }
@@ -576,7 +671,7 @@ function renderCell(cell) {
 
     if (kind === "prompt") {
       const trace = el("div", { class: "trace" });
-      for (const node of renderTraceSteps(cell.trace || [])) trace.append(node);
+      for (const node of renderTraceSteps(cell.trace || [], cell)) trace.append(node);
       box.append(trace);
     }
 
@@ -586,9 +681,146 @@ function renderCell(cell) {
       outBlock.append(el("pre", { class: cell.status === "error" ? "error" : "", text }));
     }
     box.append(outBlock);
+  } else if (kind === "tool") {
+    const text = cellOutputText(cell);
+    if (text) {
+      const output = el("div", { class: "agent-action-output" });
+      output.append(
+        expandableContent(
+          cell.status === "error" ? "Error" : "Output",
+          text,
+          cell.status === "error" ? "error" : ""
+        )
+      );
+      box.append(output);
+    }
   }
 
   return box;
+}
+
+function renderInteraction(cell) {
+  const request = cell.interaction;
+  const form = el("form", { class: "interaction-form" });
+  form.append(
+    el("h4", { text: request.title || "Input required" }),
+    el("p", { class: "interaction-prompt", text: request.prompt || "" })
+  );
+  const controls = new Map();
+  for (const field of request.fields || []) {
+    const group = el("fieldset", { class: "interaction-field" });
+    const legend = el("legend", { text: field.label + (field.required === false ? "" : " *") });
+    group.append(legend);
+    if (field.description) {
+      group.append(el("p", { class: "interaction-description", text: field.description }));
+    }
+    if (field.type === "text") {
+      const input = el("input", {
+        type: "text",
+        placeholder: field.placeholder || "",
+        value: field.default == null ? "" : String(field.default),
+      });
+      controls.set(field.id, { field, nodes: [input] });
+      group.append(input);
+    } else if (field.type === "confirmation") {
+      const input = el("input", { type: "checkbox" });
+      input.checked = Boolean(field.default);
+      const option = el("label", { class: "interaction-option compact" });
+      option.append(input, el("span", { text: field.description || "Yes" }));
+      controls.set(field.id, { field, nodes: [input] });
+      group.append(option);
+    } else {
+      const nodes = [];
+      for (const option of field.options || []) {
+        const input = el("input", {
+          type: field.type === "radio" ? "radio" : "checkbox",
+          name: "interaction-" + request.id + "-" + field.id,
+          value: option.value,
+        });
+        const selected = Array.isArray(field.default)
+          ? field.default.includes(option.value)
+          : field.default === option.value || (!field.default && option.recommended);
+        input.checked = selected;
+        const card = el("label", {
+          class: "interaction-option" + (option.thumbnail_url ? " with-thumbnail" : ""),
+        });
+        if (option.thumbnail_url) {
+          card.append(el("img", { src: option.thumbnail_url, alt: "" }));
+        }
+        const copy = el("span", { class: "interaction-option-copy" });
+        copy.append(
+          el("strong", { text: option.label + (option.recommended ? " — Recommended" : "") })
+        );
+        if (option.description) copy.append(el("small", { text: option.description }));
+        card.append(input, copy);
+        group.append(card);
+        nodes.push(input);
+      }
+      controls.set(field.id, { field, nodes });
+    }
+    form.append(group);
+  }
+  const error = el("div", { class: "interaction-error" });
+  const submit = el("button", {
+    type: "submit",
+    class: "primary",
+    text: request.submit_label || "Continue",
+  });
+  const actions = el("div", { class: "interaction-actions" });
+  if (request.allow_cancel !== false) {
+    actions.append(
+      el("button", {
+        type: "button",
+        text: "Cancel",
+        onclick: async () => {
+          try {
+            await api(
+              "DELETE",
+              "/api/cells/" + cell.id + "/interaction/" + request.id
+            );
+            cell.status = "stopped";
+            cell.interaction = null;
+            renderCellsOnly();
+          } catch (e) {
+            error.textContent = e.message || String(e);
+          }
+        },
+      })
+    );
+  }
+  actions.append(submit);
+  form.append(error, actions);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const answers = {};
+    for (const [id, control] of controls) {
+      const { field, nodes } = control;
+      if (field.type === "text") answers[id] = nodes[0].value.trim();
+      else if (field.type === "confirmation") answers[id] = nodes[0].checked;
+      else if (field.type === "radio") answers[id] = (nodes.find((n) => n.checked) || {}).value;
+      else answers[id] = nodes.filter((n) => n.checked).map((n) => n.value);
+      const empty =
+        answers[id] == null || answers[id] === "" || (Array.isArray(answers[id]) && !answers[id].length);
+      if (field.required !== false && empty) {
+        error.textContent = "Please complete " + field.label + ".";
+        return;
+      }
+    }
+    submit.disabled = true;
+    try {
+      await api("POST", "/api/cells/" + cell.id + "/interaction", {
+        interaction_id: request.id,
+        answers,
+      });
+      cell.status = "running";
+      cell.interaction = null;
+      renderCellsOnly();
+    } catch (e) {
+      submit.disabled = false;
+      error.textContent = e.message || String(e);
+    }
+  });
+  return form;
 }
 
 function editMarkdown(cell) {
@@ -643,19 +875,46 @@ function usageTitle(u) {
   return parts.join(" · ");
 }
 
-function renderTraceSteps(trace) {
+function renderTraceSteps(trace, cell = null) {
   const steps = trace || [];
   const nodes = [];
+  let interactionRendered = false;
   const plan = planFromTrace(steps);
   if (plan) nodes.push(planNode(plan));
   for (const group of groupTraceSteps(steps)) {
     if (group.type === "text") {
       nodes.push(el("div", { class: "trace-step trace-text", text: group.content }));
     } else if (group.type === "tool") {
-      nodes.push(toolStepNode(group));
+      const toolNode = toolStepNode(group);
+      nodes.push(toolNode);
+      const call = group.call;
+      if (
+        cell &&
+        cell.status === "waiting_for_input" &&
+        cell.interaction &&
+        call &&
+        call.tool_call_id === cell.interaction.tool_call_id
+      ) {
+        toolNode.classList.remove("pending");
+        toolNode.classList.add("waiting");
+        const summary = toolNode.querySelector("summary");
+        if (summary) {
+          summary.append(el("span", { class: "trace-input-required", text: "input required" }));
+        }
+        nodes.push(renderInteraction(cell));
+        interactionRendered = true;
+      }
     } else if (group.type === "usage") {
       nodes.push(usageNode(group.usage));
     }
+  }
+  if (
+    cell &&
+    cell.status === "waiting_for_input" &&
+    cell.interaction &&
+    !interactionRendered
+  ) {
+    nodes.push(renderInteraction(cell));
   }
   return nodes;
 }
@@ -991,10 +1250,46 @@ function applyTrace(data) {
   if (idx === -1) return;
   if (!Array.isArray(state.cells[idx].trace)) state.cells[idx].trace = [];
   state.cells[idx].trace.push(data.step);
+  if (data.step.type === "tool_call" && data.step.name === "request_user_input") {
+    window.setTimeout(() => reconcilePendingInteraction(data.id), 150);
+  }
   const container = document.querySelector('.cell[data-cell-id="' + data.id + '"] .trace');
   if (!container) return;
   appendTraceStep(container, data.step);
 }
+
+function revealInteraction(cellId) {
+  window.requestAnimationFrame(() => {
+    const form = document.querySelector(
+      '.cell[data-cell-id="' + cellId + '"] .interaction-form'
+    );
+    if (form) form.scrollIntoView({ behavior: "smooth", block: "center" });
+  });
+}
+
+async function reconcilePendingInteraction(cellId, attempt = 0) {
+  try {
+    const snap = await api("GET", "/api/state");
+    const serverCell = (snap.cells || []).find((cell) => cell.id === cellId);
+    if (serverCell) {
+      state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
+      renderCellsOnly();
+      refreshStatusBar();
+      if (serverCell.status === "waiting_for_input" && serverCell.interaction) {
+        revealInteraction(cellId);
+        return;
+      }
+      if (serverCell.status !== "running") return;
+    }
+  } catch (_) {
+    // SSE remains the primary update path; retry briefly while the deferred
+    // tool transitions from a streamed call into a waiting prompt.
+  }
+  if (attempt < 20) {
+    window.setTimeout(() => reconcilePendingInteraction(cellId, attempt + 1), 250);
+  }
+}
+
 function buildFileTree(files) {
   const root = { name: "", isDir: true, children: new Map() };
   for (const f of files) {
@@ -1299,11 +1594,18 @@ function openSettingsDialog() {
       step: "1",
       value: String(state.settings.max_retries != null ? state.settings.max_retries : 5),
     });
+    const recordStepsInput = el("input", { type: "checkbox" });
+    recordStepsInput.checked = state.settings.record_agent_steps !== false;
 
     dialog.append(
       row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
       row("Theme", "app shell appearance", themeSelect),
-      row("Retry attempts", "times a prompt run retries before reporting an error", retriesInput)
+      row("Retry attempts", "times a prompt run retries before reporting an error", retriesInput),
+      row(
+        "Record agent steps",
+        "append generated tool calls, outputs, and responses to the notebook",
+        recordStepsInput
+      )
     );
 
     dialogActions(dialog, "Save", async () => {
@@ -1312,6 +1614,7 @@ function openSettingsDialog() {
           model: modelInput.value.trim(),
           theme: themeSelect.value,
           max_retries: Number(retriesInput.value) || 5,
+          record_agent_steps: recordStepsInput.checked,
         });
         state.settings = settings;
         applyTheme();
@@ -1375,6 +1678,7 @@ function connectSSE() {
   const es = new EventSource("/api/events");
   es.addEventListener("cell", (e) => {
     const data = JSON.parse(e.data);
+    if (isGeneratedCell(data)) return;
     const idx = state.cells.findIndex((c) => c.id === data.id);
     if (idx === -1) {
       if (data.kind) state.cells.push(data);
@@ -1383,6 +1687,9 @@ function connectSSE() {
     }
     renderCellsOnly();
     refreshStatusBar();
+    if (data.status === "waiting_for_input" && data.interaction) {
+      revealInteraction(data.id);
+    }
   });
   es.addEventListener("trace", (e) => {
     applyTrace(JSON.parse(e.data));

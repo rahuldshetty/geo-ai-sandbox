@@ -10,16 +10,24 @@ duration, so workspace open/close/save blocks until the current run finishes
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 import traceback
 import uuid
 from pathlib import Path
+from pprint import pformat
 from urllib.parse import urlparse
 
 from geolibre import Map
 from geolibre import project as _project
-from pydantic_ai import CancellationToken, RunCancelled
+from pydantic_ai import (
+    CancellationToken,
+    DeferredToolRequests,
+    DeferredToolResults,
+    RunCancelled,
+)
+from pydantic_ai_harness.planning import PlanItem
 
 
 from .. import trace
@@ -40,6 +48,49 @@ _RUNNABLE_KINDS = frozenset({"python", "prompt"})
 _PLAN_TOOLS = frozenset(
     {"write_plan", "add_task", "update_task_status", "update_task_statuses", "remove_task"}
 )
+
+
+def _latest_plan_items(steps: list[dict]) -> list[PlanItem]:
+    """Rebuild the latest plan snapshot from a prompt's persisted trace."""
+    for step in reversed(steps):
+        if not isinstance(step, dict) or step.get("type") != "plan":
+            continue
+        items = step.get("items")
+        if not isinstance(items, list):
+            return []
+        restored = []
+        for item in items:
+            try:
+                restored.append(PlanItem.model_validate(item))
+            except (TypeError, ValueError):
+                continue
+        return restored
+    return []
+
+
+def _is_generated_cell(cell: dict) -> bool:
+    geoai = (cell.get("metadata") or {}).get("geoai") or {}
+    return bool(geoai.get("generated"))
+
+
+def _ordered_notebook_cells(cells: list[dict], provenance: list[dict]) -> list[dict]:
+    """Place hidden provenance directly after its parent in the saved notebook."""
+    by_parent: dict[str, list[dict]] = {}
+    orphaned: list[dict] = []
+    visible_ids = {cell["id"] for cell in cells}
+    for recorded in provenance:
+        geoai = (recorded.get("metadata") or {}).get("geoai") or {}
+        parent_id = geoai.get("parent_cell_id")
+        if parent_id in visible_ids:
+            by_parent.setdefault(parent_id, []).append(recorded)
+        else:
+            orphaned.append(recorded)
+    ordered = []
+    for cell in cells:
+        ordered.append(cell)
+        ordered.extend(by_parent.get(cell["id"], []))
+    ordered.extend(orphaned)
+    return ordered
 
 
 def _filename_from_url(url: str) -> str:
@@ -132,12 +183,14 @@ class AppState:
         self.active_name: str | None = None
         self.workspace: Workspace | None = None
         self.cells: list[dict] = []
+        self.provenance_cells: list[dict] = []
         self._subscribers: list[queue.Queue] = []
         self._subscribers_lock = threading.Lock()
         self._run_q: queue.Queue = queue.Queue()
         self._run_tokens: dict[str, CancellationToken] = {}
         self._cancelled: set[str] = set()
         self._queued: set[str] = set()
+        self._resume_payloads: dict[str, dict] = {}
         self._run_tokens_lock = threading.Lock()
 
         worker = threading.Thread(target=self._run_worker, name="geoai-run-worker", daemon=True)
@@ -148,7 +201,16 @@ class AppState:
     def open_workspace(self, name: str) -> None:
         with self.lock:
             ws = Workspace(workspace_root(name)).create()
-            self.cells = read_nb(ws.root / "notebook.ipynb")
+            self.workspace = ws
+            notebook_cells = read_nb(ws.root / "notebook.ipynb")
+            self.cells = [
+                cell
+                for cell in notebook_cells
+                if not _is_generated_cell(cell) and cell.get("kind") != "interaction"
+            ]
+            self.provenance_cells = [
+                cell for cell in notebook_cells if _is_generated_cell(cell)
+            ]
             self._rehydrate_traces(ws)
             snap = ws.maps / _SNAPSHOT
             if snap.exists():
@@ -178,6 +240,7 @@ class AppState:
             self.active_name = None
             self.workspace = None
             self.cells = []
+            self.provenance_cells = []
             set_context(None)
             self.map.load_project(
                 _project.build_empty_project(center=(0, 0), zoom=2)
@@ -186,7 +249,7 @@ class AppState:
     def save_workspace(self) -> dict:
         with self.lock:
             if self.workspace is not None:
-                write_nb(self.workspace.root / "notebook.ipynb", self.cells)
+                self._save_cells()
                 persist_map(self.map, self.workspace)
             return {"ok": True}
 
@@ -214,6 +277,8 @@ class AppState:
                     self.settings["max_retries"] = max(1, int(patch["max_retries"]))
                 except (TypeError, ValueError):
                     self.settings["max_retries"] = 5
+            if "record_agent_steps" in patch and patch["record_agent_steps"] is not None:
+                self.settings["record_agent_steps"] = bool(patch["record_agent_steps"])
             try:
                 self.settings = save_settings(self.settings)
                 if rebuild and self.workspace is not None:
@@ -249,6 +314,17 @@ class AppState:
                 cell["run_id"] = loaded["run_id"]
             if loaded["conversation_id"]:
                 cell["conversation_id"] = loaded["conversation_id"]
+            if loaded["status"] == "done" and loaded["output"] is not None:
+                cell["status"] = "done"
+                cell["outputs"] = [_stream_output(str(loaded["output"]))]
+            elif loaded["status"] == "error" and loaded["error"] is not None:
+                cell["status"] = "error"
+                cell["outputs"] = [
+                    _error_output("AgentError", f"ERROR: {loaded['error']}")
+                ]
+            elif loaded["status"] == "stopped":
+                cell["status"] = "stopped"
+                cell["outputs"] = [_stream_output("Stopped.")]
 
     def _finish_trace(
         self,
@@ -281,7 +357,127 @@ class AppState:
 
     def _save_cells(self) -> None:
         if self.workspace is not None:
-            write_nb(self.workspace.root / "notebook.ipynb", self.cells)
+            write_nb(
+                self.workspace.root / "notebook.ipynb",
+                _ordered_notebook_cells(self.cells, self.provenance_cells),
+            )
+
+    def _append_recorded_cell(self, cell: dict) -> None:
+        """Persist agent provenance without adding it to the interactive cell list."""
+        self.provenance_cells.append(cell)
+        self._save_cells()
+
+    def _record_tool_call(self, parent_id: str, step: dict) -> dict:
+        """Create a read-only code cell for a structured agent tool call."""
+        name = step.get("name") or "unknown_tool"
+        args = step.get("args")
+        if name == "run_python" and isinstance(args, dict) and isinstance(args.get("code"), str):
+            source = args["code"]
+        else:
+            rendered = pformat(args if isinstance(args, dict) else {}, sort_dicts=False)
+            source = (
+                f"# GeoAI structured tool call: {name}\n"
+                f"# Replayed by the Geo-AI harness with the active workspace context.\n"
+                f"{name}(**{rendered})"
+            )
+        cell = new_cell(
+            "tool",
+            source,
+            metadata={
+                "geoai": {
+                    "kind": "tool",
+                    "role": "assistant",
+                    "parent_cell_id": parent_id,
+                    "tool_name": name,
+                    "tool_call_id": step.get("tool_call_id"),
+                    "args": args,
+                    "generated": True,
+                }
+            },
+        )
+        cell["status"] = "running"
+        self._append_recorded_cell(cell)
+        return cell
+
+    def _recorded_tool_cell(self, tool_call_id: str) -> dict | None:
+        """Find a provenance cell for a tool call already recorded before a resume."""
+        for cell in reversed(self.provenance_cells):
+            geoai = (cell.get("metadata") or {}).get("geoai") or {}
+            if geoai.get("tool_call_id") == tool_call_id:
+                return cell
+        return None
+
+    def _record_tool_result(self, cell: dict, step: dict) -> None:
+        """Attach a tool result to its previously recorded code cell."""
+        content = step.get("content")
+        if isinstance(content, str):
+            text = content
+        else:
+            text = json.dumps(content, indent=2, ensure_ascii=False)
+        cell["outputs"] = [_stream_output(text)]
+        cell["execution_count"] = 1
+        cell["status"] = "done"
+        self._save_cells()
+
+    def _record_agent_response(self, parent_id: str, output: str) -> None:
+        """Append the agent's final response as a standard Markdown cell."""
+        cell = new_cell(
+            "markdown",
+            output,
+            metadata={
+                "geoai": {
+                    "kind": "response",
+                    "role": "assistant",
+                    "parent_cell_id": parent_id,
+                    "generated": True,
+                }
+            },
+        )
+        cell["status"] = "done"
+        self._append_recorded_cell(cell)
+
+    def _record_interaction_response(
+        self, parent_id: str, interaction: dict, answers: dict
+    ) -> None:
+        """Complete the deferred tool record and save the user's choices."""
+        call_id = interaction.get("tool_call_id")
+        for recorded in reversed(self.provenance_cells):
+            geoai = (recorded.get("metadata") or {}).get("geoai") or {}
+            if geoai.get("tool_call_id") == call_id:
+                self._record_tool_result(
+                    recorded,
+                    {"content": {"user_response": answers}},
+                )
+                break
+        fields = {
+            field.get("id"): field
+            for field in interaction.get("fields", [])
+        }
+        lines = ["### Input provided"]
+        for key, value in answers.items():
+            field = fields.get(key) or {}
+            option_labels = {
+                option.get("value"): option.get("label", option.get("value"))
+                for option in field.get("options", [])
+            }
+            values = value if isinstance(value, list) else [value]
+            rendered = ", ".join(str(option_labels.get(item, item)) for item in values)
+            lines.append(f"- **{field.get('label', key)}:** {rendered}")
+        cell = new_cell(
+            "markdown",
+            "\n".join(lines),
+            metadata={
+                "geoai": {
+                    "kind": "interaction_response",
+                    "role": "user",
+                    "parent_cell_id": parent_id,
+                    "interaction_id": interaction.get("id"),
+                    "generated": True,
+                }
+            },
+        )
+        cell["status"] = "done"
+        self._append_recorded_cell(cell)
 
     def add_cell(self, kind: str, source: str = "", index: int | None = None) -> dict:
         with self.lock:
@@ -304,6 +500,14 @@ class AppState:
         with self.lock:
             cell = self._find_cell(cell_id)
             self.cells.remove(cell)
+            self.provenance_cells = [
+                recorded
+                for recorded in self.provenance_cells
+                if ((recorded.get("metadata") or {}).get("geoai") or {}).get(
+                    "parent_cell_id"
+                )
+                != cell_id
+            ]
             self._save_cells()
 
     def move_cell(self, cell_id: str, index: int) -> None:
@@ -326,6 +530,17 @@ class AppState:
             cell["usage"] = None
             cell["run_id"] = None
             cell["conversation_id"] = None
+            # A fresh run supersedes any interaction left pending by a prior run.
+            cell["interaction"] = None
+            cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
+            self.provenance_cells = [
+                recorded
+                for recorded in self.provenance_cells
+                if ((recorded.get("metadata") or {}).get("geoai") or {}).get(
+                    "parent_cell_id"
+                )
+                != cell_id
+            ]
             self.broadcast(
                 "cell",
                 {"id": cell_id, "status": "running", "trace": [], "usage": None},
@@ -342,7 +557,7 @@ class AppState:
                         self._queued.add(cell["id"])
                     self._run_q.put(cell["id"])
 
-    def _execute_cell(self, cell: dict) -> None:
+    def _execute_cell(self, cell: dict, resume: dict | None = None) -> None:
         source = cell["source"]
         kind = cell["kind"]
         prev = cell.get("execution_count")
@@ -364,13 +579,20 @@ class AppState:
                 cell["status"] = "done"
                 cell["outputs"] = [_stream_output(output)]
         else:  # prompt
-            trace_steps: list[dict] = []
-            result = self._run_prompt(cell["id"], source, trace_steps.append)
+            trace_steps: list[dict] = list(cell.get("trace", [])) if resume else []
+            result = self._run_prompt(cell["id"], source, trace_steps, resume=resume)
             cell["trace"] = trace_steps
             cell["usage"] = result.get("usage")
             cell["run_id"] = result.get("run_id")
             cell["conversation_id"] = result.get("conversation_id")
-            if result.get("stopped"):
+            if result.get("waiting"):
+                cell["status"] = "waiting_for_input"
+                cell["interaction"] = result["interaction"]
+                cell.setdefault("metadata", {}).setdefault("geoai", {})["interaction"] = result[
+                    "interaction"
+                ]
+                cell["outputs"] = []
+            elif result.get("stopped"):
                 cell["status"] = "stopped"
                 cell["outputs"] = [_stream_output("Stopped.")]
             elif result.get("error") is not None:
@@ -378,6 +600,7 @@ class AppState:
                 cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
             else:
                 cell["status"] = "done"
+                cell["outputs"] = [_stream_output(result.get("output") or "")]
 
     def stop_cell(self, cell_id: str) -> bool:
         """Cancel a running or queued prompt cell; returns True if it was stopped."""
@@ -392,8 +615,14 @@ class AppState:
         return True
 
 
-    def _run_prompt(self, cell_id: str, source: str, on_trace) -> dict:
+    def _run_prompt(
+        self, cell_id: str, source: str, trace_steps: list[dict], *, resume: dict | None = None
+    ) -> dict:
         """Run a prompt cell through the agent, streaming trace steps.
+
+        ``trace_steps`` is the cell's live step list: new steps are appended to
+        it as they stream, and on resume its existing entries are the prior
+        segment's steps (used to restore the plan snapshot).
 
         Returns a dict with ``output``/``stopped``/``error`` plus ``usage``,
         ``run_id``, and ``conversation_id`` for the UI and trace persistence.
@@ -413,7 +642,9 @@ class AppState:
             token = CancellationToken()
             self._run_tokens[cell_id] = token
         try:
-            return asyncio.run(self._run_prompt_async(cell_id, source, token, on_trace))
+            return asyncio.run(
+                self._run_prompt_async(cell_id, source, token, trace_steps, resume=resume)
+            )
         except RunCancelled:
             self._finish_trace(cell_id, status="stopped")
             return {
@@ -439,11 +670,13 @@ class AppState:
                 self._run_tokens.pop(cell_id, None)
                 self._cancelled.discard(cell_id)
 
-    async def _run_prompt_async(self, cell_id: str, source: str, token, on_trace) -> dict:
+    async def _run_prompt_async(
+        self, cell_id: str, source: str, token, trace_steps: list[dict], *, resume: dict | None = None
+    ) -> dict:
         agent = current_agent()
         trace_path = self._trace_path(cell_id)
         run_id = uuid.uuid4().hex
-        if trace_path is not None:
+        if trace_path is not None and resume is None:
             trace.write_run(
                 trace_path,
                 cell_id=cell_id,
@@ -451,19 +684,56 @@ class AppState:
                 model=self.model,
                 prompt=source,
             )
+        elif trace_path is not None:
+            trace.append_resume(
+                trace_path,
+                run_id=run_id,
+                conversation_id=resume.get("conversation_id"),
+                response=resume.get("answers") or {},
+            )
 
         plan_store = current_plan_store()
         if plan_store is not None:
-            await plan_store.set_items([])
+            # The store is shared by the single worker. A different prompt may
+            # run while this one waits for user input, and a server restart
+            # recreates the in-memory store. Restore this prompt's own latest
+            # snapshot before resuming instead of inheriting another run's plan.
+            plan_items = _latest_plan_items(trace_steps) if resume else []
+            await plan_store.set_items(plan_items)
+        recorded_tools: dict[str, dict] = {}
 
         async def on_events(ctx, events):  # noqa: ARG001 - ctx unused
             async for event in events:
                 step = _event_to_step(event)
                 if step is not None:
-                    on_trace(step)
-                    if trace_path is not None:
-                        trace.append_step(trace_path, step)
-                    self.broadcast("trace", {"id": cell_id, "step": step})
+                    tool_call_id = step.get("tool_call_id")
+                    # A resumed run re-emits the deferred tool call it is
+                    # answering; that step is already in the trace, so only
+                    # its (new) result should be appended.
+                    replayed = (
+                        step.get("type") == "tool_call"
+                        and tool_call_id is not None
+                        and any(
+                            s.get("type") == "tool_call"
+                            and s.get("tool_call_id") == tool_call_id
+                            for s in trace_steps
+                        )
+                    )
+                    if not replayed:
+                        trace_steps.append(step)
+                        if trace_path is not None:
+                            trace.append_step(trace_path, step)
+                        self.broadcast("trace", {"id": cell_id, "step": step})
+                    if self.settings.get("record_agent_steps", True):
+                        if step.get("type") == "tool_call" and tool_call_id:
+                            existing = self._recorded_tool_cell(tool_call_id)
+                            recorded_tools[tool_call_id] = existing or self._record_tool_call(
+                                cell_id, step
+                            )
+                        elif step.get("type") == "tool_result" and tool_call_id:
+                            recorded = recorded_tools.get(tool_call_id)
+                            if recorded is not None:
+                                self._record_tool_result(recorded, step)
                 if (
                     plan_store is not None
                     and getattr(event, "event_kind", None) == "function_tool_result"
@@ -471,12 +741,12 @@ class AppState:
                 ):
                     items = [i.model_dump(mode="json") for i in await plan_store.get_items()]
                     plan_step = {"type": "plan", "items": items}
-                    on_trace(plan_step)
+                    trace_steps.append(plan_step)
                     if trace_path is not None:
                         trace.append_step(trace_path, plan_step)
                     self.broadcast("trace", {"id": cell_id, "step": plan_step})
 
-        source = self._augment_source(source)
+        source = self._augment_source(source) if resume is None else None
         max_attempts = self.settings.get("max_retries", 5)
         last_error = None
 
@@ -484,6 +754,9 @@ class AppState:
             try:
                 result = await agent.run(
                     source,
+                    message_history=resume.get("messages") if resume else None,
+                    deferred_tool_results=resume.get("deferred_results") if resume else None,
+                    conversation_id=resume.get("conversation_id") if resume else None,
                     event_stream_handler=on_events,
                     cancellation_token=token,
                     run_id=run_id,
@@ -500,7 +773,7 @@ class AppState:
                             f"({type(exc).__name__}: {exc}). Retrying."
                         ),
                     }
-                    on_trace(note)
+                    trace_steps.append(note)
                     if trace_path is not None:
                         trace.append_step(trace_path, note)
                     self.broadcast("trace", {"id": cell_id, "step": note})
@@ -508,8 +781,32 @@ class AppState:
                 break
             else:
                 usage = trace.usage_to_dict(result.usage)
+                if isinstance(result.output, DeferredToolRequests):
+                    interaction = self._interaction_from_deferred(result.output)
+                    recorded = self._recorded_tool_cell(interaction["tool_call_id"])
+                    if recorded is not None:
+                        recorded["status"] = "waiting_for_input"
+                        self._save_cells()
+                    if trace_path is not None:
+                        trace.append_messages(trace_path, result.all_messages())
+                        trace.append_result(
+                            trace_path,
+                            status="waiting_for_input",
+                            usage=usage,
+                            conversation_id=result.conversation_id,
+                        )
+                    return {
+                        "output": None,
+                        "waiting": True,
+                        "interaction": interaction,
+                        "stopped": False,
+                        "error": None,
+                        "usage": usage,
+                        "run_id": run_id,
+                        "conversation_id": result.conversation_id,
+                    }
                 usage_step = {"type": "usage", "usage": usage}
-                on_trace(usage_step)
+                trace_steps.append(usage_step)
                 self.broadcast("trace", {"id": cell_id, "step": usage_step})
                 if trace_path is not None:
                     trace.append_step(trace_path, usage_step)
@@ -521,6 +818,8 @@ class AppState:
                         usage=usage,
                         conversation_id=result.conversation_id,
                     )
+                if self.settings.get("record_agent_steps", True):
+                    self._record_agent_response(cell_id, str(result.output))
                 return {
                     "output": str(result.output),
                     "stopped": False,
@@ -541,6 +840,105 @@ class AppState:
             "conversation_id": None,
         }
 
+    @staticmethod
+    def _interaction_from_deferred(requests: DeferredToolRequests) -> dict:
+        """Normalize one deferred request into the browser interaction schema."""
+        if not requests.calls:
+            raise RuntimeError("agent requested approval without an external interaction")
+        call = requests.calls[0]
+        metadata = requests.metadata.get(call.tool_call_id, {})
+        form = metadata.get("interaction")
+        if not isinstance(form, dict):
+            args = call.args if isinstance(call.args, dict) else {}
+            form = {
+                "title": args.get("title", "Input required"),
+                "prompt": args.get("prompt", ""),
+                "fields": args.get("fields", []),
+                "submit_label": args.get("submit_label", "Continue"),
+                "allow_cancel": args.get("allow_cancel", True),
+            }
+        return {
+            "id": uuid.uuid4().hex,
+            "tool_call_id": call.tool_call_id,
+            **form,
+        }
+
+    def respond_interaction(self, cell_id: str, interaction_id: str, answers: dict) -> None:
+        """Queue a paused prompt to resume with structured browser answers."""
+        with self.lock:
+            cell = self._find_cell(cell_id)
+            interaction = cell.get("interaction")
+            if (
+                cell.get("status") != "waiting_for_input"
+                or not interaction
+                or interaction.get("id") != interaction_id
+            ):
+                raise ValueError("interaction is no longer pending")
+            field_ids = {field.get("id") for field in interaction.get("fields", [])}
+            unknown = set(answers) - field_ids
+            if unknown:
+                raise ValueError(f"unknown interaction fields: {sorted(unknown)}")
+            missing = {
+                field.get("id")
+                for field in interaction.get("fields", [])
+                if field.get("required", True)
+                and field.get("id") not in answers
+                and field.get("default") is None
+            }
+            if missing:
+                raise ValueError(f"missing required fields: {sorted(missing)}")
+            for field in interaction.get("fields", []):
+                if field.get("type") not in {"radio", "multi_select"}:
+                    continue
+                allowed = {option.get("value") for option in field.get("options", [])}
+                answer = answers.get(field.get("id"), field.get("default"))
+                selected = answer if isinstance(answer, list) else [answer]
+                invalid = {value for value in selected if value is not None and value not in allowed}
+                if invalid:
+                    raise ValueError(
+                        f"invalid value for {field.get('label', field.get('id'))}: "
+                        f"{sorted(invalid)}"
+                    )
+            trace_path = self._trace_path(cell_id)
+            messages = trace.read_messages(trace_path) if trace_path is not None else []
+            if not messages:
+                raise ValueError("cannot resume because conversation history is unavailable")
+            call_id = interaction["tool_call_id"]
+            payload = {
+                "messages": messages,
+                "deferred_results": DeferredToolResults(calls={call_id: answers}),
+                "conversation_id": cell.get("conversation_id"),
+                "answers": answers,
+            }
+            self._record_interaction_response(cell_id, interaction, answers)
+            cell["status"] = "running"
+            cell["interaction"] = None
+            cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
+            with self._run_tokens_lock:
+                self._resume_payloads[cell_id] = payload
+                self._queued.add(cell_id)
+            self._save_cells()
+            self.broadcast("cell", cell)
+            self._run_q.put(cell_id)
+
+    def cancel_interaction(self, cell_id: str, interaction_id: str) -> None:
+        """Cancel a prompt that is paused for browser input."""
+        with self.lock:
+            cell = self._find_cell(cell_id)
+            interaction = cell.get("interaction")
+            if (
+                cell.get("status") != "waiting_for_input"
+                or not interaction
+                or interaction.get("id") != interaction_id
+            ):
+                raise ValueError("interaction is no longer pending")
+            cell["status"] = "stopped"
+            cell["interaction"] = None
+            cell["outputs"] = [_stream_output("Stopped while waiting for input.")]
+            cell.setdefault("metadata", {}).setdefault("geoai", {}).pop("interaction", None)
+            self._save_cells()
+            self.broadcast("cell", cell)
+
 
     def _run_worker(self) -> None:
         while True:
@@ -551,7 +949,12 @@ class AppState:
                         cell = self._find_cell(cell_id)
                     except KeyError:
                         continue
-                    self._execute_cell(cell)
+                    with self._run_tokens_lock:
+                        resume = self._resume_payloads.pop(cell_id, None)
+                    self._execute_cell(cell, resume=resume)
+                    # Execution status, count, outputs, and usage are runtime
+                    # mutations too; persist them after every completed run.
+                    self._save_cells()
                     self.broadcast("cell", cell)
                     self.broadcast("map", {"project": self.map.to_project()})
                     self.broadcast("files", {"files": self.list_files()})
