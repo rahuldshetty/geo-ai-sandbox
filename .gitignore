@@ -162,6 +162,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Downloaded browser assets (bootstrapped by geoai.server.assets)
+geoai/server/static/vendor/marked.min.js
+
 # Spyder project settings
 .spyderproject
 .spyproject

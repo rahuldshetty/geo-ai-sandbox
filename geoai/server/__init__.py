@@ -6,6 +6,7 @@ import os
 from importlib import import_module
 
 from ..config import load_env
+from .assets import ensure_frontend_assets
 
 __all__ = ["app", "run", "state"]
 
@@ -50,6 +51,7 @@ def run() -> None:
             f"Geo-AI: port {port} is already in use; "
             "set GEOAI_PORT to another port and start again."
         )
+    ensure_frontend_assets()
     _open_browser(f"http://127.0.0.1:{port}/")
     import uvicorn
 

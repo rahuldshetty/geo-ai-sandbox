@@ -35,4 +35,4 @@ geo-ai = "geoai.server:run"
 include = ["geoai*"]
 
 [tool.setuptools.package-data]
-geoai = ["server/static/*", "server/static/vendor/*"]
+geoai = ["server/static/*"]

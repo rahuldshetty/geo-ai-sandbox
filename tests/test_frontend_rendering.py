@@ -16,13 +16,17 @@ MARKED_JS = (
 )
 
 
-@unittest.skipUnless(shutil.which("node"), "Node.js is required for frontend tests")
 class FrontendRenderingTests(unittest.TestCase):
-    def run_js(self, expression: str):
-        script = (
+    def run_js(self, expression: str, *, include_marked: bool = False):
+        marked = (
             f"global.marked = require({json.dumps(str(MARKED_JS))});"
-            f"const rendering = require({json.dumps(str(RENDERING_JS))});"
-            f"console.log(JSON.stringify({expression}));"
+            if include_marked
+            else ""
+        )
+        script = (
+            marked
+            + f"const rendering = require({json.dumps(str(RENDERING_JS))});"
+            + f"console.log(JSON.stringify({expression}));"
         )
         result = subprocess.run(
             ["node", "-e", script],
@@ -32,6 +36,12 @@ class FrontendRenderingTests(unittest.TestCase):
         )
         return json.loads(result.stdout)
 
+
+@unittest.skipUnless(
+    shutil.which("node") and MARKED_JS.exists(),
+    "Node.js and the downloaded Marked asset are required for Markdown tests",
+)
+class MarkedRenderingTests(FrontendRenderingTests):
     def test_markdown_renders_tables_and_inline_formatting(self):
         source = (
             "| Layer | Cloud |\n"
@@ -40,7 +50,10 @@ class FrontendRenderingTests(unittest.TestCase):
             "| **After** | 24% |"
         )
 
-        html = self.run_js(f"rendering.renderMarkdown({json.dumps(source)})")
+        html = self.run_js(
+            f"rendering.renderMarkdown({json.dumps(source)})",
+            include_marked=True,
+        )
 
         self.assertIn("<table>", html)
         self.assertIn("<strong>Before</strong>", html)
@@ -49,12 +62,16 @@ class FrontendRenderingTests(unittest.TestCase):
 
     def test_markdown_raw_html_is_escaped_before_inserting_into_dom(self):
         html = self.run_js(
-            f"rendering.renderMarkdown({json.dumps('<img src=x onerror=alert(1)>')})"
+            f"rendering.renderMarkdown({json.dumps('<img src=x onerror=alert(1)>')})",
+            include_marked=True,
         )
 
         self.assertNotIn("<img", html)
         self.assertIn("&lt;img", html)
 
+
+@unittest.skipUnless(shutil.which("node"), "Node.js is required for trace tests")
+class FrontendTraceRenderingTests(FrontendRenderingTests):
     def test_completed_final_text_and_trace_usage_have_single_renderers(self):
         groups = [
             {"type": "tool", "call": {"name": "update_task_status"}},

@@ -33,6 +33,10 @@ copy .env.example .env
 .venv/Scripts/python.exe -m geoai.server
 ```
 
+On the first start, Geo-AI downloads the pinned `marked` browser bundle into
+`geoai/server/static/vendor/`. The generated asset is ignored by Git and is
+reused on later starts, so only the initial startup requires network access.
+
 ## Usage
 
 - **Map (left)** — the live GeoLibre map. Agent tool calls mutate it in place and
