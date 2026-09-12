@@ -55,6 +55,10 @@ function el(tag, attrs, children) {
   return node;
 }
 
+function appendChildren(node, ...children) {
+  node.append(...children.filter((child) => child != null));
+}
+
 // -- helpers ---------------------------------------------------------------
 
 function cellOutputText(cell) {
@@ -433,7 +437,7 @@ function renderSidePanel() {
   const cellsActive = state.selected_tab === "Cells";
   const toolbar = cellsActive && state.active_workspace ? renderAddCellRow() : null;
   content.append(cellsActive ? renderCellsTab() : renderDataTab());
-  panel.append(tabbar, toolbar, content, renderStatusBar());
+  appendChildren(panel, tabbar, toolbar, content, renderStatusBar());
   return panel;
 }
 
