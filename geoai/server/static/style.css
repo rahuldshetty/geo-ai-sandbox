@@ -345,7 +345,10 @@ button {
 .add-cell-row {
   display: flex;
   gap: 8px;
-  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
 
 .add-cell-row button {
