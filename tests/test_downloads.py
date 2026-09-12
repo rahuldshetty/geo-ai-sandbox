@@ -47,14 +47,13 @@ class DownloadToolTests(unittest.TestCase):
                     return_value=_Response(b"asset"),
                 ):
                     path = download("https://example.com/asset.tif", "scene.tif")
+                self.assertEqual((workspace.root / path).read_bytes(), b"asset")
+                self.assertEqual(events[0]["status"], "running")
+                self.assertEqual(events[-1]["status"], "done")
+                self.assertEqual(events[-1]["parent_cell_id"], "prompt-1")
+                self.assertEqual(events[-1]["path"], "data/scene.tif")
             finally:
                 set_context(None)
-
-        self.assertEqual((workspace.root / path).read_bytes(), b"asset")
-        self.assertEqual(events[0]["status"], "running")
-        self.assertEqual(events[-1]["status"], "done")
-        self.assertEqual(events[-1]["parent_cell_id"], "prompt-1")
-        self.assertEqual(events[-1]["path"], "data/scene.tif")
 
     def test_download_files_runs_independent_jobs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -75,14 +74,13 @@ class DownloadToolTests(unittest.TestCase):
                             {"url": "https://example.com/two.tif"},
                         ]
                     )
+                self.assertEqual(len(paths), 2)
+                self.assertEqual({Path(item["path"]).name for item in paths}, {"one.tif", "two.tif"})
+                self.assertEqual({item["status"] for item in paths}, {"done"})
+                done = {event["filename"] for event in events if event["status"] == "done"}
+                self.assertEqual(done, {"one.tif", "two.tif"})
             finally:
                 set_context(None)
-
-        self.assertEqual(len(paths), 2)
-        self.assertEqual({Path(item["path"]).name for item in paths}, {"one.tif", "two.tif"})
-        self.assertEqual({item["status"] for item in paths}, {"done"})
-        done = {event["filename"] for event in events if event["status"] == "done"}
-        self.assertEqual(done, {"one.tif", "two.tif"})
 
 
 if __name__ == "__main__":

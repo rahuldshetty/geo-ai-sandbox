@@ -29,7 +29,7 @@ CAPABILITIES = (
         summary="Import, download, find, inspect, and write workspace data.",
         keywords=("file", "import", "download", "workspace", "data"),
         implementation="backend",
-        tools=("list_files", "find_files", "read_file", "write_file", "download"),
+        tools=("list_files", "find_files", "read_file", "write_file", "download", "download_files"),
     ),
     Capability(
         id="map.layers",

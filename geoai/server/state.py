@@ -609,6 +609,12 @@ class AppState:
                 )
                 != cell_id
             ]
+            with self._download_lock:
+                self._download_cells = {
+                    job_id: download
+                    for job_id, download in self._download_cells.items()
+                    if download.get("parent_cell_id") != cell_id
+                }
             self.broadcast(
                 "cell",
                 {"id": cell_id, "status": "running", "trace": [], "usage": None},

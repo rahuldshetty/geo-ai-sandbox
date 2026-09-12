@@ -550,6 +550,10 @@ function updateDownloadNode(node, download) {
     fill.style.width = percent + "%";
     progress.classList.remove("indeterminate");
     label.textContent = percent + "% · " + formatBytes(current) + " / " + formatBytes(total);
+  } else if (download.status === "done" || download.status === "error") {
+    fill.style.width = download.status === "done" ? "100%" : "0";
+    progress.classList.remove("indeterminate");
+    label.textContent = formatBytes(current) + (download.status === "error" ? " downloaded" : "");
   } else {
     fill.style.width = "35%";
     progress.classList.add("indeterminate");
@@ -1578,7 +1582,14 @@ async function importUrl(urlInput) {
     toast("Enter a URL first");
     return;
   }
-  await postThenRender("POST", "/api/import/url", { url, filename: null });
+  try {
+    await api("POST", "/api/import/url", { url, filename: null });
+    urlInput.value = "";
+    await loadState();
+    toast("Downloaded into the workspace data folder");
+  } catch (e) {
+    toast(e.message || String(e));
+  }
 }
 
 async function doSave() {

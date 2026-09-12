@@ -114,6 +114,9 @@ def _emit_progress(ctx, event: dict) -> None:
 
 def _download_one(ctx, url: str, filename: str, *, notify: bool = True) -> str:
     """Download one URL and emit lifecycle/progress events when configured."""
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("download URLs must use http:// or https://")
     job_id = uuid.uuid4().hex
     name = Path(filename).name or _filename_from_url(url)
     out = ctx.workspace.resolve_under(ctx.workspace.data, name)
