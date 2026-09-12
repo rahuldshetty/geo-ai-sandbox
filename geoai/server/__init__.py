@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from importlib import import_module
 
-from ..config import load_env
+from ..config import load_env, validate_env
 from .assets import ensure_frontend_assets
 
 __all__ = ["app", "run", "state"]
@@ -45,6 +45,7 @@ def _port_in_use(port: int) -> bool:
 
 
 def run() -> None:
+    validate_env()
     port = int(os.getenv("GEOAI_PORT", "8000"))
     if _port_in_use(port):
         raise SystemExit(
