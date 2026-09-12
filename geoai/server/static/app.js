@@ -180,10 +180,13 @@ function normalizeCells(cells) {
   return Array.isArray(cells)
     ? cells
         .filter((cell) => cell && typeof cell === "object" && !isGeneratedCell(cell))
-        .map((cell) => ({
-          ...cell,
-          source: cell.source == null ? "" : String(cell.source),
-        }))
+        .map((cell) => {
+          const normalized = { ...cell };
+          if (Object.prototype.hasOwnProperty.call(cell, "source")) {
+            normalized.source = cell.source == null ? "" : String(cell.source);
+          }
+          return normalized;
+        })
     : [];
 }
 
