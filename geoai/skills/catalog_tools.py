@@ -13,7 +13,7 @@ from urllib.parse import quote, urlencode, urljoin, urlparse
 from urllib.request import Request, urlopen
 
 from ..context import current
-from .map_tools import _persist, _require_map
+from .map_tools import _persist, _require_map, add_raster
 from .workspace_tools import download
 
 _VANTOR_CATALOG = "https://vantor-opendata.s3.amazonaws.com/events/catalog.json"
@@ -306,18 +306,55 @@ def search_openaerialmap(
     return {"scenes": scenes, "found": int(found), "page": page, "limit": limit}
 
 
-def add_catalog_scene(scene_key: str, name: str | None = None) -> str:
-    """Add a scene returned by a catalog search to the live map."""
+def add_catalog_scene(scene_key: str, name: str | None = None) -> dict:
+    """Download a searched scene into ``data/`` and add the local copy to the map.
+
+    The download is intentionally completed before the map layer is created.
+    This keeps the saved project independent of the catalog's remote COG or
+    TiTiler service and gives the user a progress cell while the asset arrives.
+    Repeated calls return the existing layer instead of adding a duplicate.
+    """
     scene = _cached_scene(scene_key)
     if not scene:
         raise ValueError("scene is not in the current catalog search cache; search again")
     ctx = current()
     m = _require_map(ctx)
     layer_name = name or scene.get("title") or scene.get("id") or "Catalog scene"
-    if scene.get("render") == "xyz":
-        layer_id = m.add_tile_layer(scene["tile_url"], layer_name)
-    else:
-        layer_id = m.add_raster(scene["asset_url"], layer_name)
+    suffix = Path(urlparse(scene["asset_url"]).path).suffix or ".tif"
+    provider = re.sub(r"[^A-Za-z0-9_-]+", "-", str(scene.get("provider") or "catalog"))
+    item_id = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(scene.get("id") or "scene"))
+    key_suffix = re.sub(r"[^A-Za-z0-9]+", "", scene_key.rsplit(":", 1)[-1])[:12]
+    filename = f"{provider.lower()}-{item_id}-{key_suffix}{suffix}"
+    existing = ctx.workspace.resolve_under(ctx.workspace.data, filename)
+    rel = existing.relative_to(ctx.workspace.root).as_posix()
+    for layer in m.project.get("layers", []):
+        metadata = layer.get("metadata") or {}
+        catalog = metadata.get("geoaiCatalog") or {}
+        if (
+            catalog.get("scene_key") == scene_key
+            or catalog.get("local_path") == rel
+            or metadata.get("geoaiSourcePath") == rel
+        ):
+            layer_id = layer.get("id")
+            if isinstance(layer_id, str) and layer_id:
+                return {
+                    "status": "existing",
+                    "layer_id": layer_id,
+                    "name": layer.get("name"),
+                    "local_path": rel,
+                }
+    downloaded = (
+        str(existing)
+        if existing.is_file() and existing.stat().st_size > 0
+        else download_catalog_scene(scene_key, filename)
+    )
+    rel = (
+        Path(downloaded).relative_to(ctx.workspace.root).as_posix()
+        if Path(downloaded).is_absolute()
+        else downloaded.replace("\\", "/")
+    )
+    ctx.workspace.resolve(rel, must_exist=True)
+    layer_id = add_raster(rel, layer_name)
     for layer in m.project.get("layers", []):
         if layer.get("id") == layer_id:
             layer.setdefault("metadata", {})["geoaiCatalog"] = {
@@ -333,16 +370,26 @@ def add_catalog_scene(scene_key: str, name: str | None = None) -> str:
                     "gsd",
                     "cloud_cover",
                     "asset_url",
+                    "local_path",
                 )
                 if scene.get(key) is not None
             }
+            layer["metadata"]["geoaiCatalog"]["local_path"] = rel
             break
     _persist(ctx, m)
-    return layer_id
+    return {
+        "status": "added",
+        "layer_id": layer_id,
+        "name": layer_name,
+        "local_path": rel,
+    }
 
 
 def download_catalog_scene(scene_key: str, filename: str | None = None) -> str:
-    """Download a previously searched scene into ``data/`` for local analysis."""
+    """Download a previously searched scene into ``data/`` for local analysis.
+
+    Returns the workspace-relative path of the downloaded asset.
+    """
     scene = _cached_scene(scene_key)
     if not scene:
         raise ValueError("scene is not in the current catalog search cache; search again")

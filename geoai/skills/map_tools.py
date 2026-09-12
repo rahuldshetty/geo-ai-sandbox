@@ -6,6 +6,7 @@ survives a kernel restart and stays in sync with the workspace.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -232,7 +233,7 @@ def add_wms(
     return layer_id
 
 
-def set_view(center: list[float] | None = None, zoom: float | None = None) -> None:
+def set_view(center: list[float] | None = None, zoom: float | None = None) -> dict:
     """Center/zoom the map. ``center`` is ``[lng, lat]``."""
     ctx = current()
     m = _require_map(ctx)
@@ -241,17 +242,19 @@ def set_view(center: list[float] | None = None, zoom: float | None = None) -> No
     elif zoom is not None:
         m.set_zoom(zoom)
     _persist(ctx, m)
+    return {"status": "applied", "mapView": deepcopy(m.project.get("mapView"))}
 
 
-def set_basemap(basemap: str) -> None:
+def set_basemap(basemap: str) -> dict:
     """Set the background basemap (name or MapLibre style URL)."""
     ctx = current()
     m = _require_map(ctx)
     m.set_basemap(basemap)
     _persist(ctx, m)
+    return {"status": "applied", "basemap": basemap}
 
 
-def style_layer(layer: str, style: dict[str, Any]) -> None:
+def style_layer(layer: str, style: dict[str, Any]) -> dict:
     """Merge style overrides onto a layer (e.g. ``{"fillColor": "#ff0000"}``)."""
     ctx = current()
     m = _require_map(ctx)
@@ -260,6 +263,7 @@ def style_layer(layer: str, style: dict[str, Any]) -> None:
         raise RuntimeError(f"layer not found: {layer!r}")
     handle.set_style(**style)
     _persist(ctx, m)
+    return {"status": "applied", "layer": layer, "style": style}
 
 
 def classify_layer(
@@ -268,7 +272,7 @@ def classify_layer(
     palette: str = "viridis",
     method: str = "quantile",
     k: int = 5,
-) -> None:
+) -> dict:
     """Symbolize a GeoJSON layer as a choropleth on a numeric ``column``.
 
     ``method`` is ``"quantile"`` or ``"equal-interval"``; ``k`` is the class
@@ -282,51 +286,66 @@ def classify_layer(
     _classify(project, layer, column, class_count=k, colormap=palette, scheme=method)
     m.load_project(project)
     _persist(ctx, m)
+    return {
+        "status": "applied",
+        "layer": layer,
+        "column": column,
+        "palette": palette,
+        "method": method,
+        "classes": k,
+    }
 
 
-def set_layer_visibility(layer: str, visible: bool) -> None:
+def set_layer_visibility(layer: str, visible: bool) -> dict:
     """Show or hide a layer."""
     ctx = current()
     m = _require_map(ctx)
     m.set_layer_visibility(layer, visible)
     _persist(ctx, m)
+    return {"status": "applied", "layer": layer, "visible": visible}
 
 
-def set_layer_opacity(layer: str, opacity: float) -> None:
+def set_layer_opacity(layer: str, opacity: float) -> dict:
     """Set a layer's opacity in ``[0, 1]``."""
     ctx = current()
     m = _require_map(ctx)
     m.set_layer_opacity(layer, opacity)
     _persist(ctx, m)
+    return {"status": "applied", "layer": layer, "opacity": opacity}
 
 
-def remove_layer(layer: str) -> None:
+def remove_layer(layer: str) -> dict:
     """Remove a layer by id or display name."""
     ctx = current()
     m = _require_map(ctx)
     m.remove_layer(layer)
     _persist(ctx, m)
+    return {"status": "applied", "removed": layer}
 
 
-def clear_layers() -> None:
+def clear_layers() -> dict:
     """Remove all layers from the map."""
     ctx = current()
     m = _require_map(ctx)
     m.clear_layers()
     _persist(ctx, m)
+    return {"status": "applied", "layerCount": 0}
 
 
 def add_legend(
     title: str | None = None, items: dict[str, str] | None = None, shape: str = "square"
-) -> None:
+) -> dict:
     """Add a legend. ``items`` maps label -> CSS color."""
     ctx = current()
     m = _require_map(ctx)
     m.add_legend(title=title, legend_dict=items, shape=shape)
     _persist(ctx, m)
+    return {"status": "applied", "title": title, "items": items, "shape": shape}
 
 
-def add_colorbar(colormap: str = "viridis", vmin: float = 0.0, vmax: float = 1.0) -> None:
+def add_colorbar(
+    colormap: str = "viridis", vmin: float = 0.0, vmax: float = 1.0
+) -> dict:
     """Add a colorbar for a continuous (single-band) raster.
 
     ``colormap`` is one of the names from :func:`list_colormaps`.
@@ -335,6 +354,12 @@ def add_colorbar(colormap: str = "viridis", vmin: float = 0.0, vmax: float = 1.0
     m = _require_map(ctx)
     m.add_colorbar(colormap=colormap, vmin=vmin, vmax=vmax)
     _persist(ctx, m)
+    return {
+        "status": "applied",
+        "colormap": colormap,
+        "min": vmin,
+        "max": vmax,
+    }
 
 
 def zoom_to_layer(layer: str) -> None:
@@ -344,12 +369,16 @@ def zoom_to_layer(layer: str) -> None:
     m.zoom_to_layer(layer)
 
 
-def fit_bounds(bounds: list[float]) -> None:
-    """Fit the map camera to ``[west, south, east, north]`` (pure project mutation)."""
+def fit_bounds(bounds: list[float]) -> dict:
+    """Fit the map camera and return confirmation of the resulting view."""
     ctx = current()
     m = _require_map(ctx)
     m.fit_project_bounds(bounds)
     _persist(ctx, m)
+    return {
+        "status": "applied",
+        "mapView": deepcopy(m.project.get("mapView")),
+    }
 
 
 def save_map(path: str) -> str:

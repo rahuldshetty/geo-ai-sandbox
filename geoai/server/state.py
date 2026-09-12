@@ -25,6 +25,8 @@ from pydantic_ai import (
     CancellationToken,
     DeferredToolRequests,
     DeferredToolResults,
+    ModelAPIError,
+    ModelHTTPError,
     RunCancelled,
 )
 from pydantic_ai_harness.planning import PlanItem
@@ -33,7 +35,7 @@ from pydantic_ai_harness.planning import PlanItem
 from .. import trace
 from ..agent import build_agent, current_agent, current_plan_store
 from ..config import list_workspaces, load_env, workspace_root
-from ..context import GeoContext, set_context
+from ..context import GeoContext, current, set_context
 from ..map_view import persist_map
 from ..settings import load_settings, save_settings
 from ..skills.python_tools import get_last_output_text, run_python, set_dangerous_mode
@@ -48,6 +50,57 @@ _RUNNABLE_KINDS = frozenset({"python", "prompt"})
 _PLAN_TOOLS = frozenset(
     {"write_plan", "add_task", "update_task_status", "update_task_statuses", "remove_task"}
 )
+
+# Only these tools are known to leave the workspace and live map unchanged.
+# Unknown and newly added tools are treated conservatively as state-changing
+# until they are explicitly reviewed and added here.
+_REPLAY_SAFE_TOOLS = frozenset(
+    {
+        "describe_geolibre_bridge",
+        "describe_map",
+        "discover_capabilities",
+        "find_files",
+        "inspect_output",
+        "list_colormaps",
+        "list_files",
+        "python_help",
+        "query_output",
+        "raster_info",
+        "raster_stats",
+        "read_file",
+        "read_plan",
+        "read_vector",
+        "request_user_input",
+        "sample_point",
+        "search_openaerialmap",
+        "search_tools",
+        "search_vantor_events",
+        "search_vantor_imagery",
+    }
+).union(_PLAN_TOOLS)
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
+
+
+def _tool_may_change_state(name: str | None) -> bool:
+    return not name or name not in _REPLAY_SAFE_TOOLS
+
+
+def _is_transient_run_error(error: Exception) -> bool:
+    """Return whether replaying a workspace/map-safe attempt may succeed."""
+    if isinstance(error, ModelHTTPError):
+        return (
+            error.status_code in _TRANSIENT_HTTP_STATUSES
+            or error.status_code >= 500
+        )
+    # Non-HTTP ModelAPIError instances represent provider/transport failures.
+    return isinstance(error, ModelAPIError)
+
+
+def _retry_delay(error: Exception, attempt: int) -> float:
+    """Return bounded provider-aware backoff seconds for a retry."""
+    if isinstance(error, ModelHTTPError) and error.retry_after is not None:
+        return min(error.retry_after, 30.0)
+    return min(0.5 * (2 ** (attempt - 1)), 8.0)
 
 
 def _latest_plan_items(steps: list[dict]) -> list[PlanItem]:
@@ -131,6 +184,7 @@ def _event_to_step(event: object) -> dict | None:
             "type": "tool_result",
             "name": getattr(part, "tool_name", None),
             "content": _json_safe(getattr(part, "content", None)),
+            "outcome": getattr(part, "outcome", None),
             "tool_call_id": event.tool_call_id,
         }
     if ek == "part_start":
@@ -192,6 +246,8 @@ class AppState:
         self._queued: set[str] = set()
         self._resume_payloads: dict[str, dict] = {}
         self._run_tokens_lock = threading.Lock()
+        self._download_cells: dict[str, dict] = {}
+        self._download_lock = threading.RLock()
 
         worker = threading.Thread(target=self._run_worker, name="geoai-run-worker", daemon=True)
         worker.start()
@@ -223,7 +279,9 @@ class AppState:
             # scheme carry non-durable URLs; re-point them to this server's stable
             # /api/files route (needs the context bound first, since repoint uses
             # `current()` to build the URL).
-            ctx = GeoContext(map=self.map, workspace=ws, version=None)
+            with self._download_lock:
+                self._download_cells.clear()
+            ctx = self._new_context(ws)
             set_context(ctx)
             repoint_local_rasters(self.map, ws)
             build_agent(ctx, self.model)
@@ -241,6 +299,8 @@ class AppState:
             self.workspace = None
             self.cells = []
             self.provenance_cells = []
+            with self._download_lock:
+                self._download_cells.clear()
             set_context(None)
             self.map.load_project(
                 _project.build_empty_project(center=(0, 0), zoom=2)
@@ -282,7 +342,7 @@ class AppState:
             try:
                 self.settings = save_settings(self.settings)
                 if rebuild and self.workspace is not None:
-                    ctx = GeoContext(map=self.map, workspace=self.workspace, version=None)
+                    ctx = self._new_context(self.workspace)
                     set_context(ctx)
                     build_agent(ctx, self.model)
             except Exception as exc:  # noqa: BLE001 - roll back and surface
@@ -292,6 +352,70 @@ class AppState:
                 raise ValueError(f"could not apply settings: {exc}") from exc
             set_dangerous_mode(self.settings.get("dangerous_mode", False))
             return dict(self.settings)
+
+    def _new_context(self, workspace: Workspace) -> GeoContext:
+        """Build the shared tool context, including download progress routing."""
+        return GeoContext(
+            map=self.map,
+            workspace=workspace,
+            version=None,
+            download_progress=self._on_download_progress,
+        )
+
+    # -- download progress --------------------------------------------------
+
+    def _on_download_progress(self, event: dict) -> None:
+        """Update a reusable download cell without blocking the run worker.
+
+        Prompt execution holds ``state.lock`` for its full duration. Progress
+        callbacks also arrive from parallel download threads, so this path uses
+        its own lock and only broadcasts immutable snapshots; it never waits for
+        the main state lock.
+        """
+        job_id = event.get("id")
+        if not job_id:
+            return
+        files = None
+        with self._download_lock:
+            cell = self._download_cells.get(job_id)
+            if cell is None:
+                cell = {
+                    "id": job_id,
+                    "kind": "download",
+                    "parent_cell_id": event.get("parent_cell_id"),
+                    "filename": event.get("filename") or "download",
+                    "status": "running",
+                    "bytes_downloaded": 0,
+                    "total_bytes": None,
+                    "path": None,
+                    "error": None,
+                }
+                self._download_cells[job_id] = cell
+            for key in (
+                "parent_cell_id",
+                "filename",
+                "status",
+                "bytes_downloaded",
+                "total_bytes",
+                "path",
+                "error",
+            ):
+                if key in event:
+                    cell[key] = event[key]
+            snapshot = dict(cell)
+            if snapshot.get("status") == "done" and self.workspace is not None:
+                # Do not call self.list_files() here: prompt execution holds
+                # state.lock while a parallel download worker emits this event.
+                # Reading the workspace directly keeps the completion event
+                # from waiting on the run worker that is waiting on the download.
+                files = self.workspace.list_files()
+        self.broadcast("download", snapshot)
+        if files is not None:
+            self.broadcast("files", {"files": files})
+
+    def _downloads_snapshot(self) -> list[dict]:
+        with self._download_lock:
+            return [dict(cell) for cell in self._download_cells.values()]
 
     # -- traces ------------------------------------------------------------
 
@@ -508,6 +632,12 @@ class AppState:
                 )
                 != cell_id
             ]
+            with self._download_lock:
+                self._download_cells = {
+                    job_id: download
+                    for job_id, download in self._download_cells.items()
+                    if download.get("parent_cell_id") != cell_id
+                }
             self._save_cells()
 
     def move_cell(self, cell_id: str, index: int) -> None:
@@ -542,6 +672,12 @@ class AppState:
                 )
                 != cell_id
             ]
+            with self._download_lock:
+                self._download_cells = {
+                    job_id: download
+                    for job_id, download in self._download_cells.items()
+                    if download.get("parent_cell_id") != cell_id
+                }
             self.broadcast(
                 "cell",
                 {"id": cell_id, "status": "running", "trace": [], "usage": None},
@@ -563,45 +699,55 @@ class AppState:
         kind = cell["kind"]
         prev = cell.get("execution_count")
         cell["execution_count"] = (prev or 0) + 1
+        ctx = None
+        try:
+            ctx = current()
+            ctx.download_parent_id = cell["id"] if kind == "prompt" else None
+        except RuntimeError:
+            pass
 
-        if kind == "python":
-            with self._run_tokens_lock:
-                self._queued.discard(cell["id"])
-            try:
-                run_python(source)
-                output = get_last_output_text()
-            except Exception as exc:  # noqa: BLE001 - surface failures in the cell output
-                output = "ERROR: " + str(exc)
-            cell["trace"] = []
-            if output.startswith("ERROR:"):
-                cell["status"] = "error"
-                cell["outputs"] = [_error_output("PythonError", output)]
+        try:
+            if kind == "python":
+                with self._run_tokens_lock:
+                    self._queued.discard(cell["id"])
+                try:
+                    run_python(source)
+                    output = get_last_output_text()
+                except Exception as exc:  # noqa: BLE001 - surface failures in the cell output
+                    output = "ERROR: " + str(exc)
+                cell["trace"] = []
+                if output.startswith("ERROR:"):
+                    cell["status"] = "error"
+                    cell["outputs"] = [_error_output("PythonError", output)]
+                else:
+                    cell["status"] = "done"
+                    cell["outputs"] = [_stream_output(output)]
             else:
-                cell["status"] = "done"
-                cell["outputs"] = [_stream_output(output)]
-        else:  # prompt
-            trace_steps: list[dict] = list(cell.get("trace", [])) if resume else []
-            result = self._run_prompt(cell["id"], source, trace_steps, resume=resume)
-            cell["trace"] = trace_steps
-            cell["usage"] = result.get("usage")
-            cell["run_id"] = result.get("run_id")
-            cell["conversation_id"] = result.get("conversation_id")
-            if result.get("waiting"):
-                cell["status"] = "waiting_for_input"
-                cell["interaction"] = result["interaction"]
-                cell.setdefault("metadata", {}).setdefault("geoai", {})["interaction"] = result[
-                    "interaction"
-                ]
-                cell["outputs"] = []
-            elif result.get("stopped"):
-                cell["status"] = "stopped"
-                cell["outputs"] = [_stream_output("Stopped.")]
-            elif result.get("error") is not None:
-                cell["status"] = "error"
-                cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
-            else:
-                cell["status"] = "done"
-                cell["outputs"] = [_stream_output(result.get("output") or "")]
+                trace_steps: list[dict] = list(cell.get("trace", [])) if resume else []
+                result = self._run_prompt(cell["id"], source, trace_steps, resume=resume)
+                cell["trace"] = trace_steps
+                cell["usage"] = result.get("usage")
+                cell["run_id"] = result.get("run_id")
+                cell["conversation_id"] = result.get("conversation_id")
+                if result.get("waiting"):
+                    cell["status"] = "waiting_for_input"
+                    cell["interaction"] = result["interaction"]
+                    cell.setdefault("metadata", {}).setdefault("geoai", {})["interaction"] = result[
+                        "interaction"
+                    ]
+                    cell["outputs"] = []
+                elif result.get("stopped"):
+                    cell["status"] = "stopped"
+                    cell["outputs"] = [_stream_output("Stopped.")]
+                elif result.get("error") is not None:
+                    cell["status"] = "error"
+                    cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
+                else:
+                    cell["status"] = "done"
+                    cell["outputs"] = [_stream_output(result.get("output") or "")]
+        finally:
+            if ctx is not None:
+                ctx.download_parent_id = None
 
     def stop_cell(self, cell_id: str) -> bool:
         """Cancel a running or queued prompt cell; returns True if it was stopped."""
@@ -694,16 +840,18 @@ class AppState:
             )
 
         plan_store = current_plan_store()
+        initial_plan_items = _latest_plan_items(trace_steps) if resume else []
         if plan_store is not None:
             # The store is shared by the single worker. A different prompt may
             # run while this one waits for user input, and a server restart
             # recreates the in-memory store. Restore this prompt's own latest
             # snapshot before resuming instead of inheriting another run's plan.
-            plan_items = _latest_plan_items(trace_steps) if resume else []
-            await plan_store.set_items(plan_items)
+            await plan_store.set_items(initial_plan_items)
         recorded_tools: dict[str, dict] = {}
+        attempt_changed_state = False
 
         async def on_events(ctx, events):  # noqa: ARG001 - ctx unused
+            nonlocal attempt_changed_state
             async for event in events:
                 step = _event_to_step(event)
                 if step is not None:
@@ -735,6 +883,12 @@ class AppState:
                             recorded = recorded_tools.get(tool_call_id)
                             if recorded is not None:
                                 self._record_tool_result(recorded, step)
+                    if (
+                        step.get("type") == "tool_result"
+                        and step.get("outcome") == "success"
+                        and _tool_may_change_state(step.get("name"))
+                    ):
+                        attempt_changed_state = True
                 if (
                     plan_store is not None
                     and getattr(event, "event_kind", None) == "function_tool_result"
@@ -750,8 +904,12 @@ class AppState:
         source = self._augment_source(source) if resume is None else None
         max_attempts = self.settings.get("max_retries", 5)
         last_error = None
+        retry_block_reason = None
 
         for attempt in range(1, max_attempts + 1):
+            attempt_changed_state = False
+            if attempt > 1 and plan_store is not None:
+                await plan_store.set_items(initial_plan_items)
             try:
                 result = await agent.run(
                     source,
@@ -766,7 +924,14 @@ class AppState:
                 raise
             except Exception as exc:  # noqa: BLE001 - retry transient run failures
                 last_error = exc
-                if attempt < max_attempts:
+                transient = _is_transient_run_error(exc)
+                retry_block_reason = (
+                    "automatic replay was skipped because a tool changed the "
+                    "workspace or map; those completed changes were preserved"
+                    if attempt_changed_state
+                    else None
+                )
+                if transient and not attempt_changed_state and attempt < max_attempts:
                     note = {
                         "type": "text",
                         "content": (
@@ -778,6 +943,7 @@ class AppState:
                     if trace_path is not None:
                         trace.append_step(trace_path, note)
                     self.broadcast("trace", {"id": cell_id, "step": note})
+                    await asyncio.sleep(_retry_delay(exc, attempt))
                     continue
                 break
             else:
@@ -831,6 +997,8 @@ class AppState:
                 }
 
         error_text = str(last_error) if last_error is not None else "unknown error"
+        if retry_block_reason is not None:
+            error_text = f"{error_text} ({retry_block_reason})"
         self._finish_trace(cell_id, status="error", error=error_text)
         return {
             "output": None,
@@ -990,8 +1158,7 @@ class AppState:
             if self.workspace is None:
                 raise ValueError("no workspace open")
             name = filename or _filename_from_url(url)
-            abs_path = download(url, name)
-            rel = Path(abs_path).relative_to(self.workspace.root).as_posix()
+            rel = download(url, name)
             self.broadcast("files", {"files": self.list_files()})
             return {"path": rel}
 
@@ -1032,6 +1199,7 @@ class AppState:
                 "map_project": self.map.to_project(),
                 "map_app_url": self.map._app_url,
                 "files": self.workspace.list_files() if self.workspace else [],
+                "downloads": self._downloads_snapshot(),
                 "settings": dict(self.settings),
             }
 

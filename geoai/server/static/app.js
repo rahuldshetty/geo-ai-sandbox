@@ -9,6 +9,7 @@ const state = {
   map_project: null,
   map_app_url: null,
   files: [],
+  downloads: [],
   selected_tab: "Cells",
   settings: {
     model: "",
@@ -52,6 +53,10 @@ function el(tag, attrs, children) {
     }
   }
   return node;
+}
+
+function appendChildren(node, ...children) {
+  node.append(...children.filter((child) => child != null));
 }
 
 // -- helpers ---------------------------------------------------------------
@@ -150,10 +155,11 @@ function isGeneratedCell(cell) {
 function applySnapshot(snap) {
   state.active_workspace = snap.active_workspace;
   state.workspaces = snap.workspaces || [];
-  state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
+  state.cells = normalizeCells(snap.cells);
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
-  state.files = snap.files || [];
+  state.files = workspaceFilePaths(snap.files);
+  state.downloads = snap.downloads || [];
   state.settings = snap.settings || {
     model: "",
     theme: "light",
@@ -162,6 +168,26 @@ function applySnapshot(snap) {
     record_agent_steps: true,
   };
   applyTheme();
+}
+
+function workspaceFilePaths(files) {
+  return Array.isArray(files)
+    ? files.filter((path) => typeof path === "string" && path.trim())
+    : [];
+}
+
+function normalizeCells(cells) {
+  return Array.isArray(cells)
+    ? cells
+        .filter((cell) => cell && typeof cell === "object" && !isGeneratedCell(cell))
+        .map((cell) => {
+          const normalized = { ...cell };
+          if (Object.prototype.hasOwnProperty.call(cell, "source")) {
+            normalized.source = cell.source == null ? "" : String(cell.source);
+          }
+          return normalized;
+        })
+    : [];
 }
 
 function applyTheme() {
@@ -414,7 +440,7 @@ function renderSidePanel() {
   const cellsActive = state.selected_tab === "Cells";
   const toolbar = cellsActive && state.active_workspace ? renderAddCellRow() : null;
   content.append(cellsActive ? renderCellsTab() : renderDataTab());
-  panel.append(tabbar, toolbar, content, renderStatusBar());
+  appendChildren(panel, tabbar, toolbar, content, renderStatusBar());
   return panel;
 }
 
@@ -449,20 +475,157 @@ function renderCellsTab() {
     return wrap;
   }
 
-  if (!state.cells.length) {
+  if (!state.cells.length && !(state.downloads || []).length) {
     wrap.append(el("div", { class: "empty-hint", text: "No cells yet — add a cell above." }));
     return wrap;
   }
 
+  const attached = new Set();
   for (const cell of state.cells) {
-    wrap.append(renderCell(cell));
+    const children = (state.downloads || []).filter(
+      (download) => download.parent_cell_id === cell.id
+    );
+    wrap.append(renderCell(cell, children));
+    for (const download of children) attached.add(download.id);
+  }
+  for (const download of state.downloads || []) {
+    if (!attached.has(download.id)) wrap.append(renderDownloadCell(download));
   }
   return wrap;
 }
 
-function renderCell(cell) {
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return bytes + " B";
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let unit = -1;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return amount.toFixed(amount >= 10 || unit === 0 ? 0 : 1) + " " + units[unit];
+}
+
+function downloadStatusLabel(download) {
+  if (download.status === "done") return "complete";
+  if (download.status === "error") return "failed";
+  return "downloading";
+}
+
+function renderDownloadCell(download) {
+  const box = el("div", {
+    class: "cell download-cell",
+    "data-download-id": download.id,
+  });
+  const header = el("div", { class: "cell-header" });
+  header.append(
+    el("span", { class: "counter", text: "In[ ]" }),
+    el("span", { class: "badge", text: "download" }),
+    el("span", { class: "download-filename", text: download.filename || "download" }),
+    el("span", {
+      class: "agent-action-status download-status status-" + (download.status || "running"),
+      text: downloadStatusLabel(download),
+    })
+  );
+  box.append(header);
+
+  box.append(renderDownloadBody(download));
+  updateDownloadNode(box, download);
+  return box;
+}
+
+function renderDownloadBody(download, className = "download-body") {
+  const body = el("div", { class: className });
+  body.append(
+    el("div", {
+      class: "download-description",
+      text: download.path
+        ? "Saved to " + download.path
+        : "Downloading into the workspace data folder…",
+    })
+  );
+  const progress = el("div", { class: "download-progress" });
+  const fill = el("div", { class: "download-progress-fill" });
+  progress.append(fill);
+  body.append(progress);
+  const label = el("div", { class: "download-progress-label" });
+  body.append(label);
+  const error = download.error
+    ? el("div", { class: "download-error", text: download.error })
+    : null;
+  if (error) body.append(error);
+  return body;
+}
+
+function renderDownloadTraceNode(download) {
+  const node = el("div", {
+    class: "trace-step download-trace download-progress-node",
+    "data-download-id": download.id,
+  });
+  const summary = el("div", { class: "download-trace-summary" });
+  summary.append(
+    el("span", { class: "trace-icon", text: "↓" }),
+    el("span", { class: "trace-name", text: "download" }),
+    el("span", {
+      class: "trace-preview download-filename",
+      text: download.filename || "download",
+    }),
+    el("span", {
+      class: "agent-action-status download-status status-" + (download.status || "running"),
+      text: downloadStatusLabel(download),
+    })
+  );
+  node.append(summary, renderDownloadBody(download, "trace-body download-body"));
+  updateDownloadNode(node, download);
+  return node;
+}
+
+function updateDownloadNode(node, download) {
+  const total = Number(download.total_bytes);
+  const current = Number(download.bytes_downloaded) || 0;
+  const fill = node.querySelector(".download-progress-fill");
+  const progress = node.querySelector(".download-progress");
+  const label = node.querySelector(".download-progress-label");
+  const description = node.querySelector(".download-description");
+  const status = node.querySelector(".download-status");
+  if (download.status === "done" && Number.isFinite(total)) {
+    fill.style.width = "100%";
+    progress.classList.remove("indeterminate");
+    label.textContent = "100% · " + formatBytes(current);
+  } else if (Number.isFinite(total) && total > 0) {
+    const percent = Math.min(100, Math.round((current / total) * 100));
+    fill.style.width = percent + "%";
+    progress.classList.remove("indeterminate");
+    label.textContent = percent + "% · " + formatBytes(current) + " / " + formatBytes(total);
+  } else if (download.status === "done" || download.status === "error") {
+    fill.style.width = download.status === "done" ? "100%" : "0";
+    progress.classList.remove("indeterminate");
+    label.textContent = formatBytes(current) + (download.status === "error" ? " downloaded" : "");
+  } else {
+    fill.style.width = "35%";
+    progress.classList.add("indeterminate");
+    label.textContent = formatBytes(current) + " downloaded";
+  }
+  status.textContent = downloadStatusLabel(download);
+  status.className =
+    "agent-action-status download-status status-" + (download.status || "running");
+  if (download.path) description.textContent = "Saved to " + download.path;
+  if (download.error) {
+    let error = node.querySelector(".download-error");
+    if (!error) {
+      error = el("div", { class: "download-error" });
+      node.querySelector(".download-body").append(error);
+    }
+    error.textContent = download.error;
+  }
+}
+
+function renderCell(cell, downloadChildren = []) {
   const kind = cell.kind;
   const geoai = (cell.metadata && cell.metadata.geoai) || {};
+  const source = cell.source == null ? "" : String(cell.source);
   const generated = Boolean(geoai.generated);
   const box = el("div", {
     class: "cell" + (generated ? " generated-cell" : ""),
@@ -556,7 +719,7 @@ function renderCell(cell) {
   const body = el("div", { class: "cell-body" });
   if (kind === "markdown") {
     const md = el("div", { class: "markdown" });
-    md.innerHTML = renderMarkdown(cell.source);
+    md.innerHTML = renderMarkdown(source);
     body.append(md);
   } else if (kind === "tool") {
     const input =
@@ -566,9 +729,9 @@ function renderCell(cell) {
     body.append(expandableContent("Input", input));
   } else {
     const ta = el("textarea", {
-      rows: Math.min(12, Math.max(2, cell.source.split("\n").length)),
+      rows: Math.min(12, Math.max(2, source.split("\n").length)),
     });
-    ta.value = cell.source;
+    ta.value = source;
     if (generated) {
       ta.readOnly = true;
     } else {
@@ -608,7 +771,13 @@ function renderCell(cell) {
 
     if (kind === "prompt") {
       const trace = el("div", { class: "trace" });
-      for (const node of renderTraceSteps(cell.trace || [], cell)) trace.append(node);
+      for (const node of renderTraceSteps(cell.trace || [], cell)) {
+        if (node) trace.append(node);
+      }
+      for (const download of downloadChildren) {
+        const node = renderDownloadTraceNode(download);
+        if (node) trace.append(node);
+      }
       box.append(trace);
     }
 
@@ -797,8 +966,9 @@ function editMarkdown(cell) {
   const box = document.querySelector('.cell[data-cell-id="' + cell.id + '"]');
   if (!box) return;
   const body = box.querySelector(".cell-body");
-  const ta = el("textarea", { rows: Math.min(12, Math.max(2, cell.source.split("\n").length)) });
-  ta.value = cell.source;
+  const source = cell.source == null ? "" : String(cell.source);
+  const ta = el("textarea", { rows: Math.min(12, Math.max(2, source.split("\n").length)) });
+  ta.value = source;
   ta.addEventListener("blur", async () => {
     await updateCell(cell.id, ta.value);
     render();
@@ -1336,6 +1506,19 @@ function renderDataTab() {
     return wrap;
   }
 
+  const heading = el("div", { class: "data-heading" });
+  heading.append(
+    el("strong", { class: "data-heading-label", text: "Workspace files" }),
+    el("button", {
+      class: "data-refresh",
+      text: "↻",
+      title: "Refresh workspace files",
+      "aria-label": "Refresh workspace files",
+      onclick: () => refreshWorkspaceData(),
+    })
+  );
+  wrap.append(heading);
+
   const localRow = el("div", { class: "import-row" });
   const filesInput = el("input", { type: "file", multiple: "multiple", style: "display:none" });
   const folderInput = el("input", { type: "file", webkitdirectory: "", style: "display:none" });
@@ -1361,6 +1544,15 @@ function renderDataTab() {
   }
 
   return wrap;
+}
+
+async function refreshWorkspaceData() {
+  try {
+    await loadState();
+    toast("Workspace files refreshed");
+  } catch (e) {
+    toast(e.message || String(e));
+  }
 }
 
 // -- cell actions ----------------------------------------------------------
@@ -1469,7 +1661,14 @@ async function importUrl(urlInput) {
     toast("Enter a URL first");
     return;
   }
-  await postThenRender("POST", "/api/import/url", { url, filename: null });
+  try {
+    await api("POST", "/api/import/url", { url, filename: null });
+    urlInput.value = "";
+    await loadState();
+    toast("Downloaded into the workspace data folder");
+  } catch (e) {
+    toast(e.message || String(e));
+  }
 }
 
 async function doSave() {
@@ -1495,6 +1694,7 @@ async function doExit() {
   state.workspace = null;
   state.cells = [];
   state.files = [];
+  state.downloads = [];
   render();
 }
 
@@ -1606,7 +1806,11 @@ function openSettingsDialog() {
     dialog.append(
       row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
       row("Theme", "app shell appearance", themeSelect),
-      row("Retry attempts", "times a prompt run retries before reporting an error", retriesInput),
+      row(
+        "Transient attempts",
+        "maximum provider attempts before a workspace or map change",
+        retriesInput,
+      ),
       row(
         "Record agent steps",
         "append generated tool calls, outputs, and responses to the notebook",
@@ -1685,20 +1889,25 @@ function connectSSE() {
   es.addEventListener("cell", (e) => {
     const data = JSON.parse(e.data);
     if (isGeneratedCell(data)) return;
-    const idx = state.cells.findIndex((c) => c.id === data.id);
+    const normalized = normalizeCells([data])[0];
+    if (!normalized) return;
+    const idx = state.cells.findIndex((c) => c.id === normalized.id);
     if (idx === -1) {
-      if (data.kind) state.cells.push(data);
+      if (normalized.kind) state.cells.push(normalized);
     } else {
-      state.cells[idx] = { ...state.cells[idx], ...data };
+      state.cells[idx] = { ...state.cells[idx], ...normalized };
     }
     renderCellsOnly();
     refreshStatusBar();
-    if (data.status === "waiting_for_input" && data.interaction) {
-      revealInteraction(data.id);
+    if (normalized.status === "waiting_for_input" && normalized.interaction) {
+      revealInteraction(normalized.id);
     }
   });
   es.addEventListener("trace", (e) => {
     applyTrace(JSON.parse(e.data));
+  });
+  es.addEventListener("download", (e) => {
+    applyDownload(JSON.parse(e.data));
   });
   es.addEventListener("map", (e) => {
     const data = JSON.parse(e.data);
@@ -1707,7 +1916,7 @@ function connectSSE() {
   });
   es.addEventListener("files", (e) => {
     const data = JSON.parse(e.data);
-    state.files = data.files || [];
+    state.files = workspaceFilePaths(data.files);
     renderDataOnly();
   });
   es.addEventListener("settings", (e) => {
@@ -1718,6 +1927,32 @@ function connectSSE() {
       render();
     }
   });
+}
+
+function applyDownload(download) {
+  if (!download || !download.id) return;
+  const index = (state.downloads || []).findIndex((item) => item.id === download.id);
+  if (index === -1) {
+    state.downloads = [...(state.downloads || []), download];
+  } else {
+    state.downloads[index] = { ...state.downloads[index], ...download };
+  }
+  if (
+    download.status === "done" &&
+    download.path &&
+    !state.files.includes(download.path)
+  ) {
+    state.files = [...state.files, download.path];
+    renderDataOnly();
+  }
+  const node = document.querySelector(
+    '[data-download-id="' + download.id + '"]'
+  );
+  if (!node) {
+    renderCellsOnly();
+    return;
+  }
+  updateDownloadNode(node, state.downloads.find((item) => item.id === download.id));
 }
 
 function renderCellsOnly() {

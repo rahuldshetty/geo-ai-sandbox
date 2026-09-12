@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from pydantic_ai import Agent, DeferredToolRequests, ToolFailed
 from pydantic_ai.capabilities import AbstractCapability, ReinjectSystemPrompt
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import RunContext
 from pydantic_ai_harness import (
     ClearToolResults,
@@ -13,9 +15,9 @@ from pydantic_ai_harness import (
     SummarizingCompaction,
     TieredCompaction,
 )
+from pydantic_ai_harness.planning import InMemoryPlanStore
 
 from .context import GeoContext, set_context
-from pydantic_ai_harness.planning import InMemoryPlanStore
 from .skills import ALL_TOOLS
 
 SYSTEM_PROMPT = """You are GeoAI, a geospatial-analysis agent in a Geo-AI web workspace.
@@ -40,8 +42,9 @@ Rules:
    OpenAerialMap). If several scenes are credible, present compact scene choices
    using scene_key as each option value, thumbnail_url for previews, and date,
    phase, sensor, resolution, and cloud cover in the description. After the user
-   chooses, use add_catalog_scene to display it or download_catalog_scene when
-   local analysis is needed.
+   chooses, use add_catalog_scene to download the selected scene into data/ and
+   display the workspace-local copy. Tell the user that the asset is being
+   downloaded and report its relative data/ path when complete.
 3. Prefer the provided tools over run_python. Use run_python only for math or
    processing no tool covers (arbitrary NumPy/pandas, custom algorithms).
    run_python is sandboxed by default: basic stdlib (os, sys, pathlib, shutil,
@@ -56,8 +59,16 @@ Rules:
    run_python output is truncated to the first ~30 lines. For large output use
    inspect_output(start, count) to page through lines, or query_output(query)
    to extract a JSON/XML sub-value (jq-like keys, or an XPath-lite tag path).
-4. Every path you pass must stay inside the workspace (relative paths resolve
-   under the root). Read from data/, write under results/.
+4. Downloadable external file assets (especially plugin imagery/COGs) must
+   be downloaded into data/ before they are used on the map or in analysis.
+   Remote XYZ/WMS/basemap services may remain remote. Use download for one
+   file or download_files for several independent files; the UI shows one
+   progress cell per download. The batch tool returns one result per input,
+   including successful paths and any individual error, so continue using
+   successful files when one sibling fails. Tell the user when a download
+   starts and where each completed file lives. Every path you pass must stay
+   inside the workspace (relative paths resolve under the root). Read from
+   data/, write under results/.
 5. To show a raster on the map: inspect with raster_info, stretch with rescale,
    convert with to_cog, then add_raster(results/<name>.tif). Colormap "gray" for
    radar/SAR, "terrain" for elevation.
@@ -86,8 +97,7 @@ GeoLibre source to discover capabilities):
 """
 
 
-_agent: "Agent | None" = None
-_plan_store: "InMemoryPlanStore | None" = None
+_TOOL_RETRIES = 3
 
 # Keep only routing, interaction, and basic orientation tools in every model
 # request. Pydantic AI's ToolSearch capability automatically exposes the other
@@ -102,6 +112,9 @@ _CORE_TOOLS = frozenset(
         "find_files",
     }
 )
+
+_agent: "Agent | None" = None
+_plan_store: "InMemoryPlanStore | None" = None
 
 
 def resolve_model(model: str):
@@ -149,6 +162,22 @@ class ToolErrorFeedback(AbstractCapability[GeoContext]):
         raise ToolFailed(f"{type(error).__name__}: {error}")
 
 
+class NormalizeDuplicateToolNames(AbstractCapability[GeoContext]):
+    """Correct the ``name__name`` alias emitted by some compatible models."""
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        parts = [
+            replace(part, tool_name=_deduplicate_tool_name(part.tool_name))
+            if isinstance(part, ToolCallPart)
+            else part
+            for part in response.parts
+        ]
+        return replace(response, parts=parts)
+
+
+def _deduplicate_tool_name(name: str) -> str:
+    left, separator, right = name.partition("__")
+    return left if separator and left == right else name
 
 
 def build_agent(ctx: GeoContext, model: str) -> Agent:
@@ -166,9 +195,11 @@ def build_agent(ctx: GeoContext, model: str) -> Agent:
         resolve_model(model),
         system_prompt=SYSTEM_PROMPT,
         output_type=[str, DeferredToolRequests],
+        retries={"tools": _TOOL_RETRIES},
         capabilities=[
             ReinjectSystemPrompt(),
             Planning(store=_plan_store),
+            NormalizeDuplicateToolNames(),
             ToolErrorFeedback(),
             TieredCompaction(
                 tiers=[

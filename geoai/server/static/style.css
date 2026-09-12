@@ -480,6 +480,76 @@ button {
   color: var(--error);
 }
 
+.download-cell {
+  border-left: 3px solid var(--primary);
+}
+
+.download-filename {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-status {
+  margin-left: auto;
+}
+
+.download-body {
+  padding: 12px;
+}
+
+.download-description,
+.download-progress-label {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.download-description {
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.download-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.download-progress.indeterminate .download-progress-fill {
+  animation: download-progress 1.2s ease-in-out infinite;
+}
+
+.download-progress-label {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+}
+
+.download-error {
+  margin-top: 8px;
+  color: var(--error);
+  font-size: 12px;
+}
+
+@keyframes download-progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(285%); }
+}
+
 .interaction-form {
   margin: 0 12px 12px;
   padding: 14px;
@@ -872,6 +942,17 @@ button {
   border-left: 3px solid var(--accent);
 }
 
+.download-trace {
+  border-left: 3px solid var(--primary);
+}
+
+.download-trace-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+}
+
 .trace-step > summary {
   display: flex;
   align-items: center;
@@ -1106,6 +1187,36 @@ button {
 
 .import-row button:hover {
   background: var(--primary-hover);
+}
+
+.data-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 10px;
+}
+
+.data-heading-label {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.data-refresh {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.data-refresh:hover {
+  background: var(--surface-3);
+  color: var(--primary);
 }
 
 .file-tree {

@@ -8,7 +8,13 @@ from pathlib import Path
 from unittest import mock
 
 from pydantic import ValidationError
-from pydantic_ai import Agent, CallDeferred, DeferredToolRequests, DeferredToolResults
+from pydantic_ai import (
+    Agent,
+    CallDeferred,
+    DeferredToolRequests,
+    DeferredToolResults,
+    ModelHTTPError,
+)
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
@@ -174,6 +180,45 @@ class PromptInteractionFlowTests(unittest.TestCase):
             time.sleep(0.05)
         self.fail(f"cell stuck in {cell['status']!r}, expected one of {statuses}")
 
+    def _run_retry_scenario(self, tool_name, args):
+        model_requests = 0
+
+        async def stream(messages, info):  # noqa: ARG001 - FunctionModel contract
+            nonlocal model_requests
+            model_requests += 1
+            if model_requests == 1:
+                yield {
+                    0: DeltaToolCall(name=tool_name, json_args=json.dumps(args))
+                }
+            elif model_requests == 2:
+                raise ModelHTTPError(503, "test-model")
+            else:
+                yield "Recovered after transient provider failure."
+
+        async def no_sleep(delay):  # noqa: ARG001 - avoid backoff in tests
+            return None
+
+        with (
+            mock.patch.object(
+                agent_module,
+                "resolve_model",
+                lambda model: FunctionModel(stream_function=stream),
+            ),
+            mock.patch.object(
+                agent_module, "_CORE_TOOLS", agent_module._CORE_TOOLS | {tool_name}
+            ),
+            mock.patch.object(state_module, "workspace_root", lambda name: self.tmp / name),
+            mock.patch.object(state_module.asyncio, "sleep", no_sleep),
+        ):
+            app = state_module.AppState()
+            app.new_workspace(f"retry-{tool_name}")
+            cell = app.add_cell("prompt", "Run retry scenario")
+            app.run_cell(cell["id"])
+            finished = self._wait_for_status(
+                app, cell["id"], {"done", "error", "stopped"}
+            )
+        return finished, model_requests
+
     def test_prompt_run_pauses_for_input_and_resumes_with_answers(self):
         with (
             mock.patch.object(
@@ -207,6 +252,50 @@ class PromptInteractionFlowTests(unittest.TestCase):
             # grow a duplicate (permanently pending) tool_call entry.
             calls = [s for s in done["trace"] if s.get("type") == "tool_call"]
             self.assertEqual(len(calls), 1)
+
+    def test_transient_failure_after_read_only_tool_retries(self):
+        finished, requests = self._run_retry_scenario("describe_map", {})
+
+        self.assertEqual(finished["status"], "done")
+        self.assertEqual(requests, 3)
+
+    def test_transient_retry_restores_plan_from_before_attempt(self):
+        finished, requests = self._run_retry_scenario(
+            "write_plan",
+            {
+                "items": [
+                    {
+                        "content": "Temporary failed-attempt plan",
+                        "status": "in_progress",
+                    }
+                ]
+            },
+        )
+
+        self.assertEqual(finished["status"], "done")
+        self.assertEqual(requests, 3)
+        plan_items = asyncio.run(agent_module.current_plan_store().get_items())
+        self.assertEqual(plan_items, [])
+
+    def test_transient_failure_after_successful_mutation_does_not_replay(self):
+        finished, requests = self._run_retry_scenario(
+            "set_basemap",
+            {"basemap": "https://tiles.openfreemap.org/styles/liberty"},
+        )
+
+        self.assertEqual(finished["status"], "error")
+        self.assertEqual(requests, 2)
+        self.assertIn(
+            "automatic replay was skipped", finished["outputs"][0]["evalue"]
+        )
+
+    def test_transient_failure_after_failed_mutation_retries(self):
+        finished, requests = self._run_retry_scenario(
+            "add_raster", {"path": "data/missing.tif", "name": "Missing"}
+        )
+
+        self.assertEqual(finished["status"], "done")
+        self.assertEqual(requests, 3)
 
 
 if __name__ == "__main__":

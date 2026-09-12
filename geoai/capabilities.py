@@ -29,7 +29,7 @@ CAPABILITIES = (
         summary="Import, download, find, inspect, and write workspace data.",
         keywords=("file", "import", "download", "workspace", "data"),
         implementation="backend",
-        tools=("list_files", "find_files", "read_file", "write_file", "download"),
+        tools=("list_files", "find_files", "read_file", "write_file", "download", "download_files"),
     ),
     Capability(
         id="map.layers",
@@ -58,7 +58,7 @@ CAPABILITIES = (
     Capability(
         id="catalog.disaster-imagery",
         title="Open disaster imagery",
-        summary="Search, add, and download Vantor and OpenAerialMap disaster imagery.",
+        summary="Search, download into data/, and map Vantor and OpenAerialMap disaster imagery.",
         keywords=(
             "disaster", "flood", "landslide", "earthquake", "before", "after",
             "planet", "vantor", "aerial", "stac", "imagery",

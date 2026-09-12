@@ -86,11 +86,11 @@ def validate_env() -> None:
 
 
 def max_retries() -> int:
-    """Return the prompt-run retry cap, overridable via ``GEOAI_MAX_RETRIES``.
+    """Return the transient provider attempt cap from ``GEOAI_MAX_RETRIES``.
 
-    Each run attempt covers a full agent invocation; transient failures (model
-    API errors, an aborted run) retry this many times before the cell reports
-    an error. Defaults to 5; values are clamped to at least 1.
+    A prompt is replayed only for a transient provider failure before any tool
+    changes the workspace or map. Defaults to 5; values are clamped to at least
+    1.
     """
     raw = os.getenv("GEOAI_MAX_RETRIES", "5").strip()
     try:

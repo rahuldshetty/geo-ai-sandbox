@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ class Workspace:
     def __init__(self, root: str | Path):
         self.root = Path(root)
         self._manifest_path = self.root / "workspace.json"
+        self._manifest_lock = threading.RLock()
 
     # -- layout ----------------------------------------------------------
 
@@ -119,18 +121,20 @@ class Workspace:
 
     def bump(self) -> None:
         """Increment the manifest ``version`` counter."""
-        manifest = self._read_manifest()
-        manifest["version"] = int(manifest.get("version", 0)) + 1
-        self._write_manifest(manifest)
+        with self._manifest_lock:
+            manifest = self._read_manifest()
+            manifest["version"] = int(manifest.get("version", 0)) + 1
+            self._write_manifest(manifest)
 
     def record_output(self, rel: str) -> None:
         """Append ``rel`` to the manifest outputs and bump the version."""
-        manifest = self._read_manifest()
-        outputs = manifest.setdefault("outputs", [])
-        if rel not in outputs:
-            outputs.append(rel)
-        manifest["version"] = int(manifest.get("version", 0)) + 1
-        self._write_manifest(manifest)
+        with self._manifest_lock:
+            manifest = self._read_manifest()
+            outputs = manifest.setdefault("outputs", [])
+            if rel not in outputs:
+                outputs.append(rel)
+            manifest["version"] = int(manifest.get("version", 0)) + 1
+            self._write_manifest(manifest)
 
     # -- convenience -----------------------------------------------------
 

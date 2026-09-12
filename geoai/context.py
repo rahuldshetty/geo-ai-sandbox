@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from geolibre import Map
 
@@ -28,6 +28,8 @@ class GeoContext:
     workspace: Workspace
     version: Any = None
     base_url: str = field(default_factory=server_base_url)
+    download_progress: Callable[[dict], None] | None = None
+    download_parent_id: str | None = None
 
     def notify(self) -> None:
         """Trigger marimo reactivity after a file write (no-op when absent)."""
