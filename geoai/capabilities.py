@@ -58,7 +58,7 @@ CAPABILITIES = (
     Capability(
         id="catalog.disaster-imagery",
         title="Open disaster imagery",
-        summary="Search, add, and download Vantor and OpenAerialMap disaster imagery.",
+        summary="Search, download into data/, and map Vantor and OpenAerialMap disaster imagery.",
         keywords=(
             "disaster", "flood", "landslide", "earthquake", "before", "after",
             "planet", "vantor", "aerial", "stac", "imagery",

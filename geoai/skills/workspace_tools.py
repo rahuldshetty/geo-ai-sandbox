@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import shutil
+import time
 import urllib.request
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import urlparse
 
 from ..context import current
 from ..workspace import WorkspaceError
 
 _MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
+_PROGRESS_INTERVAL_BYTES = 4 * 1024 * 1024
+_PROGRESS_INTERVAL_SECONDS = 0.25
 
 
 def list_files(subdir: str = "", pattern: str = "*") -> list[str]:
@@ -75,35 +81,186 @@ def write_file(path: str, content: str) -> str:
     return str(out)
 
 
-def download(url: str, filename: str) -> str:
-    """Stream a URL into ``data/`` (capped at 2 GB); returns the absolute path."""
-    ctx = current()
-    name = Path(filename).name
+def _filename_from_url(url: str) -> str:
+    name = Path(urlparse(url).path).name
+    return name or "download"
+
+
+def _unique_filenames(files: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Avoid two parallel jobs writing the same workspace destination."""
+    counts: dict[str, int] = {}
+    result = []
+    for url, filename in files:
+        name = Path(filename).name or _filename_from_url(url)
+        stem, suffix = Path(name).stem, Path(name).suffix
+        count = counts.get(name, 0)
+        counts[name] = count + 1
+        if count:
+            name = f"{stem}_{count}{suffix}"
+        result.append((url, name))
+    return result
+
+
+def _emit_progress(ctx, event: dict) -> None:
+    callback = ctx.download_progress
+    if callable(callback):
+        try:
+            callback(event)
+        except Exception:
+            # Download persistence must not fail because a UI subscriber is
+            # unavailable or has been disconnected.
+            pass
+
+
+def _download_one(ctx, url: str, filename: str, *, notify: bool = True) -> str:
+    """Download one URL and emit lifecycle/progress events when configured."""
+    job_id = uuid.uuid4().hex
+    name = Path(filename).name or _filename_from_url(url)
     out = ctx.workspace.resolve_under(ctx.workspace.data, name)
     out.parent.mkdir(parents=True, exist_ok=True)
-    partial = out.with_name(out.name + ".part")
+    partial = out.with_name(out.name + f".{job_id}.part")
+    base_event = {
+        "id": job_id,
+        "parent_cell_id": ctx.download_parent_id,
+        "filename": name,
+        "url": url,
+        "status": "running",
+        "bytes_downloaded": 0,
+        "total_bytes": None,
+        "path": None,
+        "error": None,
+    }
+    _emit_progress(ctx, dict(base_event))
 
     req = urllib.request.Request(url, headers={"User-Agent": "geo-ai-harness"})
+    downloaded = 0
+    total_bytes = None
     try:
         with urllib.request.urlopen(req, timeout=60) as resp, open(partial, "wb") as fh:
-            total = 0
+            raw_length = resp.headers.get("Content-Length")
+            try:
+                total_bytes = int(raw_length) if raw_length else None
+            except (TypeError, ValueError):
+                total_bytes = None
+            if total_bytes is not None and total_bytes > _MAX_DOWNLOAD_BYTES:
+                raise ValueError(f"download exceeds the 2 GB cap: {url!r}")
+
+            last_reported = 0
+            last_report_time = 0.0
+            _emit_progress(
+                ctx,
+                {
+                    **base_event,
+                    "total_bytes": total_bytes,
+                },
+            )
             while True:
                 chunk = resp.read(1024 * 1024)
                 if not chunk:
                     break
-                total += len(chunk)
-                if total > _MAX_DOWNLOAD_BYTES:
+                downloaded += len(chunk)
+                if downloaded > _MAX_DOWNLOAD_BYTES:
                     raise ValueError(f"download exceeds the 2 GB cap: {url!r}")
                 fh.write(chunk)
+                now = time.monotonic()
+                if (
+                    downloaded - last_reported >= _PROGRESS_INTERVAL_BYTES
+                    or now - last_report_time >= _PROGRESS_INTERVAL_SECONDS
+                ):
+                    _emit_progress(
+                        ctx,
+                        {
+                            **base_event,
+                            "bytes_downloaded": downloaded,
+                            "total_bytes": total_bytes,
+                        },
+                    )
+                    last_reported = downloaded
+                    last_report_time = now
         partial.replace(out)
-    except Exception:
+    except Exception as exc:
         partial.unlink(missing_ok=True)
+        _emit_progress(
+            ctx,
+            {
+                **base_event,
+                "status": "error",
+                "bytes_downloaded": downloaded,
+                "total_bytes": total_bytes,
+                "error": str(exc),
+            },
+        )
         raise
 
     rel = out.relative_to(ctx.workspace.root).as_posix()
     ctx.workspace.record_output(rel)
+    _emit_progress(
+        ctx,
+        {
+            **base_event,
+            "status": "done",
+            "bytes_downloaded": out.stat().st_size,
+            "total_bytes": out.stat().st_size,
+            "path": rel,
+        },
+    )
+    if notify:
+        ctx.notify()
+    return rel
+
+
+def download(url: str, filename: str) -> str:
+    """Stream a URL into ``data/`` and return its workspace-relative path."""
+    ctx = current()
+    return _download_one(ctx, url, filename)
+
+
+def download_files(files: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Download several URLs into ``data/`` concurrently.
+
+    Each item must contain ``url`` and may contain ``filename``. Every file has
+    its own progress event/cell, so a failed or completed download does not
+    obscure the state of its siblings. The returned list preserves input order
+    and contains one ``status``/``path`` or ``status``/``error`` result per job.
+    """
+    ctx = current()
+    if not files:
+        raise ValueError("files must contain at least one download")
+    if len(files) > 20:
+        raise ValueError("a maximum of 20 downloads can be started at once")
+    requested: list[tuple[str, str]] = []
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("url"), str):
+            raise ValueError("each download must provide a url")
+        url = item["url"].strip()
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("download URLs must use http:// or https://")
+        requested.append((url, item.get("filename") or _filename_from_url(url)))
+    requested = _unique_filenames(requested)
+
+    results: list[dict[str, str] | None] = [None] * len(requested)
+    with ThreadPoolExecutor(max_workers=min(6, len(requested))) as pool:
+        futures = {
+            pool.submit(_download_one, ctx, url, filename, notify=False): index
+            for index, (url, filename) in enumerate(requested)
+        }
+        for future, index in futures.items():
+            try:
+                results[index] = {
+                    "url": requested[index][0],
+                    "filename": requested[index][1],
+                    "status": "done",
+                    "path": future.result(),
+                }
+            except Exception as exc:  # preserve sibling jobs while reporting failure
+                results[index] = {
+                    "url": requested[index][0],
+                    "filename": requested[index][1],
+                    "status": "error",
+                    "error": str(exc),
+                }
     ctx.notify()
-    return str(out)
+    return [result for result in results if result is not None]
 
 
 def import_data(source: str, dest_name: str | None = None) -> str:
@@ -139,4 +296,12 @@ def import_data(source: str, dest_name: str | None = None) -> str:
 
 
 # Re-export Path for parity with the documented run_python namespace.
-__all__ = ["list_files", "find_files", "read_file", "write_file", "download", "import_data"]
+__all__ = [
+    "list_files",
+    "find_files",
+    "read_file",
+    "write_file",
+    "download",
+    "download_files",
+    "import_data",
+]

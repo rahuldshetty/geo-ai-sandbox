@@ -480,6 +480,76 @@ button {
   color: var(--error);
 }
 
+.download-cell {
+  border-left: 3px solid var(--primary);
+}
+
+.download-filename {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-status {
+  margin-left: auto;
+}
+
+.download-body {
+  padding: 12px;
+}
+
+.download-description,
+.download-progress-label {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.download-description {
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.download-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+
+.download-progress-fill {
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.download-progress.indeterminate .download-progress-fill {
+  animation: download-progress 1.2s ease-in-out infinite;
+}
+
+.download-progress-label {
+  margin-top: 6px;
+  font-family: var(--font-mono);
+}
+
+.download-error {
+  margin-top: 8px;
+  color: var(--error);
+  font-size: 12px;
+}
+
+@keyframes download-progress {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(285%); }
+}
+
 .interaction-form {
   margin: 0 12px 12px;
   padding: 14px;

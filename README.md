@@ -62,13 +62,16 @@ reused on later starts, so only the initial startup requires network access.
   File → Settings edits the model and the UI theme.
 - **Data tab** — a tree explorer of the workspace files, with **Import files** and
   **Import folder** buttons that copy into the workspace's `data/` folder (plus a
-  URL download field). Imported data is automatically included in the agent's
-  context, so a later prompt can refer to it directly.
+  URL download field with progress shown in the Cells tab). Imported data is
+  automatically included in the agent's context, so a later prompt can refer to
+  it directly.
 - **Open disaster imagery** — the agent can search the same public Vantor Open
   Data and OpenAerialMap contracts used by GeoLibre, present matching scenes as
-  an inline choice form, add a selected scene to the live map, or download its
-  source COG into `data/` for analysis. Search metadata is cached under
-  `traces/catalog-scenes.json` so a paused selection survives a restart.
+  an inline choice form, download the selected source COG into `data/`, and add
+  that workspace-local copy to the live map. Each download appears as its own
+  progress cell; multiple independent downloads can run in parallel. Search
+  metadata is cached under `traces/catalog-scenes.json` so a paused selection
+  survives a restart.
 
 ## Workspace layout
 

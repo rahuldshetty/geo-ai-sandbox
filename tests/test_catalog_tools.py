@@ -106,8 +106,11 @@ class CatalogToolTests(unittest.TestCase):
         self.assertIn("titiler.hotosm.org", result["scenes"][0]["tile_url"])
         self.assertEqual(result["scenes"][0]["render"], "xyz")
 
+    @patch("geoai.skills.catalog_tools.download_catalog_scene")
     @patch("geoai.skills.catalog_tools._fetch_json")
-    def test_scene_cache_survives_memory_reset_and_records_layer_source(self, fetch):
+    def test_scene_cache_survives_memory_reset_and_records_layer_source(
+        self, fetch, download_scene
+    ):
         fetch.return_value = {
             "meta": {"found": 1},
             "results": [
@@ -124,8 +127,8 @@ class CatalogToolTests(unittest.TestCase):
             def __init__(self):
                 self.project = {"layers": []}
 
-            def add_tile_layer(self, url, name):
-                self.project["layers"].append({"id": "layer-1", "name": name, "url": url})
+            def add_raster(self, path, name, **kwargs):
+                self.project["layers"].append({"id": "layer-1", "name": name, "path": path})
                 return "layer-1"
 
             def save_project(self, path):
@@ -133,6 +136,9 @@ class CatalogToolTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Workspace(Path(tmp) / "workspace").create()
+            local_asset = workspace.data / "aerial.tif"
+            local_asset.write_bytes(b"COG")
+            download_scene.return_value = str(local_asset)
             fake_map = FakeMap()
             set_context(GeoContext(map=fake_map, workspace=workspace))
             try:
@@ -146,6 +152,7 @@ class CatalogToolTests(unittest.TestCase):
         metadata = fake_map.project["layers"][0]["metadata"]["geoaiCatalog"]
         self.assertEqual(metadata["id"], "oam-persisted")
         self.assertEqual(metadata["asset_url"], "https://example.com/aerial.tif")
+        self.assertEqual(metadata["local_path"], "data/aerial.tif")
 
 
 if __name__ == "__main__":

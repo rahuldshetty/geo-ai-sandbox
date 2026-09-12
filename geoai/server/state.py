@@ -33,7 +33,7 @@ from pydantic_ai_harness.planning import PlanItem
 from .. import trace
 from ..agent import build_agent, current_agent, current_plan_store
 from ..config import list_workspaces, load_env, workspace_root
-from ..context import GeoContext, set_context
+from ..context import GeoContext, current, set_context
 from ..map_view import persist_map
 from ..settings import load_settings, save_settings
 from ..skills.python_tools import get_last_output_text, run_python, set_dangerous_mode
@@ -192,6 +192,8 @@ class AppState:
         self._queued: set[str] = set()
         self._resume_payloads: dict[str, dict] = {}
         self._run_tokens_lock = threading.Lock()
+        self._download_cells: dict[str, dict] = {}
+        self._download_lock = threading.RLock()
 
         worker = threading.Thread(target=self._run_worker, name="geoai-run-worker", daemon=True)
         worker.start()
@@ -223,7 +225,9 @@ class AppState:
             # scheme carry non-durable URLs; re-point them to this server's stable
             # /api/files route (needs the context bound first, since repoint uses
             # `current()` to build the URL).
-            ctx = GeoContext(map=self.map, workspace=ws, version=None)
+            with self._download_lock:
+                self._download_cells.clear()
+            ctx = self._new_context(ws)
             set_context(ctx)
             repoint_local_rasters(self.map, ws)
             build_agent(ctx, self.model)
@@ -241,6 +245,8 @@ class AppState:
             self.workspace = None
             self.cells = []
             self.provenance_cells = []
+            with self._download_lock:
+                self._download_cells.clear()
             set_context(None)
             self.map.load_project(
                 _project.build_empty_project(center=(0, 0), zoom=2)
@@ -282,7 +288,7 @@ class AppState:
             try:
                 self.settings = save_settings(self.settings)
                 if rebuild and self.workspace is not None:
-                    ctx = GeoContext(map=self.map, workspace=self.workspace, version=None)
+                    ctx = self._new_context(self.workspace)
                     set_context(ctx)
                     build_agent(ctx, self.model)
             except Exception as exc:  # noqa: BLE001 - roll back and surface
@@ -292,6 +298,61 @@ class AppState:
                 raise ValueError(f"could not apply settings: {exc}") from exc
             set_dangerous_mode(self.settings.get("dangerous_mode", False))
             return dict(self.settings)
+
+    def _new_context(self, workspace: Workspace) -> GeoContext:
+        """Build the shared tool context, including download progress routing."""
+        return GeoContext(
+            map=self.map,
+            workspace=workspace,
+            version=None,
+            download_progress=self._on_download_progress,
+        )
+
+    # -- download progress --------------------------------------------------
+
+    def _on_download_progress(self, event: dict) -> None:
+        """Update a reusable download cell without blocking the run worker.
+
+        Prompt execution holds ``state.lock`` for its full duration. Progress
+        callbacks also arrive from parallel download threads, so this path uses
+        its own lock and only broadcasts immutable snapshots; it never waits for
+        the main state lock.
+        """
+        job_id = event.get("id")
+        if not job_id:
+            return
+        with self._download_lock:
+            cell = self._download_cells.get(job_id)
+            if cell is None:
+                cell = {
+                    "id": job_id,
+                    "kind": "download",
+                    "parent_cell_id": event.get("parent_cell_id"),
+                    "filename": event.get("filename") or "download",
+                    "status": "running",
+                    "bytes_downloaded": 0,
+                    "total_bytes": None,
+                    "path": None,
+                    "error": None,
+                }
+                self._download_cells[job_id] = cell
+            for key in (
+                "parent_cell_id",
+                "filename",
+                "status",
+                "bytes_downloaded",
+                "total_bytes",
+                "path",
+                "error",
+            ):
+                if key in event:
+                    cell[key] = event[key]
+            snapshot = dict(cell)
+        self.broadcast("download", snapshot)
+
+    def _downloads_snapshot(self) -> list[dict]:
+        with self._download_lock:
+            return [dict(cell) for cell in self._download_cells.values()]
 
     # -- traces ------------------------------------------------------------
 
@@ -508,6 +569,12 @@ class AppState:
                 )
                 != cell_id
             ]
+            with self._download_lock:
+                self._download_cells = {
+                    job_id: download
+                    for job_id, download in self._download_cells.items()
+                    if download.get("parent_cell_id") != cell_id
+                }
             self._save_cells()
 
     def move_cell(self, cell_id: str, index: int) -> None:
@@ -563,45 +630,55 @@ class AppState:
         kind = cell["kind"]
         prev = cell.get("execution_count")
         cell["execution_count"] = (prev or 0) + 1
+        ctx = None
+        try:
+            ctx = current()
+            ctx.download_parent_id = cell["id"] if kind == "prompt" else None
+        except RuntimeError:
+            pass
 
-        if kind == "python":
-            with self._run_tokens_lock:
-                self._queued.discard(cell["id"])
-            try:
-                run_python(source)
-                output = get_last_output_text()
-            except Exception as exc:  # noqa: BLE001 - surface failures in the cell output
-                output = "ERROR: " + str(exc)
-            cell["trace"] = []
-            if output.startswith("ERROR:"):
-                cell["status"] = "error"
-                cell["outputs"] = [_error_output("PythonError", output)]
+        try:
+            if kind == "python":
+                with self._run_tokens_lock:
+                    self._queued.discard(cell["id"])
+                try:
+                    run_python(source)
+                    output = get_last_output_text()
+                except Exception as exc:  # noqa: BLE001 - surface failures in the cell output
+                    output = "ERROR: " + str(exc)
+                cell["trace"] = []
+                if output.startswith("ERROR:"):
+                    cell["status"] = "error"
+                    cell["outputs"] = [_error_output("PythonError", output)]
+                else:
+                    cell["status"] = "done"
+                    cell["outputs"] = [_stream_output(output)]
             else:
-                cell["status"] = "done"
-                cell["outputs"] = [_stream_output(output)]
-        else:  # prompt
-            trace_steps: list[dict] = list(cell.get("trace", [])) if resume else []
-            result = self._run_prompt(cell["id"], source, trace_steps, resume=resume)
-            cell["trace"] = trace_steps
-            cell["usage"] = result.get("usage")
-            cell["run_id"] = result.get("run_id")
-            cell["conversation_id"] = result.get("conversation_id")
-            if result.get("waiting"):
-                cell["status"] = "waiting_for_input"
-                cell["interaction"] = result["interaction"]
-                cell.setdefault("metadata", {}).setdefault("geoai", {})["interaction"] = result[
-                    "interaction"
-                ]
-                cell["outputs"] = []
-            elif result.get("stopped"):
-                cell["status"] = "stopped"
-                cell["outputs"] = [_stream_output("Stopped.")]
-            elif result.get("error") is not None:
-                cell["status"] = "error"
-                cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
-            else:
-                cell["status"] = "done"
-                cell["outputs"] = [_stream_output(result.get("output") or "")]
+                trace_steps: list[dict] = list(cell.get("trace", [])) if resume else []
+                result = self._run_prompt(cell["id"], source, trace_steps, resume=resume)
+                cell["trace"] = trace_steps
+                cell["usage"] = result.get("usage")
+                cell["run_id"] = result.get("run_id")
+                cell["conversation_id"] = result.get("conversation_id")
+                if result.get("waiting"):
+                    cell["status"] = "waiting_for_input"
+                    cell["interaction"] = result["interaction"]
+                    cell.setdefault("metadata", {}).setdefault("geoai", {})["interaction"] = result[
+                        "interaction"
+                    ]
+                    cell["outputs"] = []
+                elif result.get("stopped"):
+                    cell["status"] = "stopped"
+                    cell["outputs"] = [_stream_output("Stopped.")]
+                elif result.get("error") is not None:
+                    cell["status"] = "error"
+                    cell["outputs"] = [_error_output("AgentError", f"ERROR: {result['error']}")]
+                else:
+                    cell["status"] = "done"
+                    cell["outputs"] = [_stream_output(result.get("output") or "")]
+        finally:
+            if ctx is not None:
+                ctx.download_parent_id = None
 
     def stop_cell(self, cell_id: str) -> bool:
         """Cancel a running or queued prompt cell; returns True if it was stopped."""
@@ -990,8 +1067,7 @@ class AppState:
             if self.workspace is None:
                 raise ValueError("no workspace open")
             name = filename or _filename_from_url(url)
-            abs_path = download(url, name)
-            rel = Path(abs_path).relative_to(self.workspace.root).as_posix()
+            rel = download(url, name)
             self.broadcast("files", {"files": self.list_files()})
             return {"path": rel}
 
@@ -1032,6 +1108,7 @@ class AppState:
                 "map_project": self.map.to_project(),
                 "map_app_url": self.map._app_url,
                 "files": self.workspace.list_files() if self.workspace else [],
+                "downloads": self._downloads_snapshot(),
                 "settings": dict(self.settings),
             }
 

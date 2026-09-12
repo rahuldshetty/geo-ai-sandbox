@@ -55,6 +55,7 @@ from .vector_tools import (
 )
 from .workspace_tools import (
     download,
+    download_files,
     find_files,
     import_data,
     list_files,
@@ -118,6 +119,7 @@ ALL_TOOLS = [
     read_file,
     write_file,
     download,
+    download_files,
     # python
     python_help,
     run_python,

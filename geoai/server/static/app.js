@@ -9,6 +9,7 @@ const state = {
   map_project: null,
   map_app_url: null,
   files: [],
+  downloads: [],
   selected_tab: "Cells",
   settings: {
     model: "",
@@ -154,6 +155,7 @@ function applySnapshot(snap) {
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = snap.files || [];
+  state.downloads = snap.downloads || [];
   state.settings = snap.settings || {
     model: "",
     theme: "light",
@@ -449,15 +451,122 @@ function renderCellsTab() {
     return wrap;
   }
 
-  if (!state.cells.length) {
+  if (!state.cells.length && !(state.downloads || []).length) {
     wrap.append(el("div", { class: "empty-hint", text: "No cells yet — add a cell above." }));
     return wrap;
   }
 
+  const attached = new Set();
   for (const cell of state.cells) {
     wrap.append(renderCell(cell));
+    for (const download of state.downloads || []) {
+      if (download.parent_cell_id === cell.id) {
+        wrap.append(renderDownloadCell(download));
+        attached.add(download.id);
+      }
+    }
+  }
+  for (const download of state.downloads || []) {
+    if (!attached.has(download.id)) wrap.append(renderDownloadCell(download));
   }
   return wrap;
+}
+
+function formatBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return bytes + " B";
+  const units = ["KB", "MB", "GB", "TB"];
+  let amount = bytes;
+  let unit = -1;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return amount.toFixed(amount >= 10 || unit === 0 ? 0 : 1) + " " + units[unit];
+}
+
+function downloadStatusLabel(download) {
+  if (download.status === "done") return "complete";
+  if (download.status === "error") return "failed";
+  return "downloading";
+}
+
+function renderDownloadCell(download) {
+  const box = el("div", {
+    class: "cell download-cell",
+    "data-download-id": download.id,
+  });
+  const header = el("div", { class: "cell-header" });
+  header.append(
+    el("span", { class: "counter", text: "In[ ]" }),
+    el("span", { class: "badge", text: "download" }),
+    el("span", { class: "download-filename", text: download.filename || "download" }),
+    el("span", {
+      class: "agent-action-status download-status status-" + (download.status || "running"),
+      text: downloadStatusLabel(download),
+    })
+  );
+  box.append(header);
+
+  const body = el("div", { class: "download-body" });
+  body.append(
+    el("div", {
+      class: "download-description",
+      text: download.path
+        ? "Saved to " + download.path
+        : "Downloading into the workspace data folder…",
+    })
+  );
+  const progress = el("div", { class: "download-progress" });
+  const fill = el("div", { class: "download-progress-fill" });
+  progress.append(fill);
+  body.append(progress);
+  const label = el("div", { class: "download-progress-label" });
+  body.append(label);
+  const error = download.error
+    ? el("div", { class: "download-error", text: download.error })
+    : null;
+  if (error) body.append(error);
+  box.append(body);
+  updateDownloadNode(box, download);
+  return box;
+}
+
+function updateDownloadNode(node, download) {
+  const total = Number(download.total_bytes);
+  const current = Number(download.bytes_downloaded) || 0;
+  const fill = node.querySelector(".download-progress-fill");
+  const progress = node.querySelector(".download-progress");
+  const label = node.querySelector(".download-progress-label");
+  const description = node.querySelector(".download-description");
+  const status = node.querySelector(".download-status");
+  if (download.status === "done" && Number.isFinite(total)) {
+    fill.style.width = "100%";
+    progress.classList.remove("indeterminate");
+    label.textContent = "100% · " + formatBytes(current);
+  } else if (Number.isFinite(total) && total > 0) {
+    const percent = Math.min(100, Math.round((current / total) * 100));
+    fill.style.width = percent + "%";
+    progress.classList.remove("indeterminate");
+    label.textContent = percent + "% · " + formatBytes(current) + " / " + formatBytes(total);
+  } else {
+    fill.style.width = "35%";
+    progress.classList.add("indeterminate");
+    label.textContent = formatBytes(current) + " downloaded";
+  }
+  status.textContent = downloadStatusLabel(download);
+  status.className =
+    "agent-action-status download-status status-" + (download.status || "running");
+  if (download.path) description.textContent = "Saved to " + download.path;
+  if (download.error) {
+    let error = node.querySelector(".download-error");
+    if (!error) {
+      error = el("div", { class: "download-error" });
+      node.querySelector(".download-body").append(error);
+    }
+    error.textContent = download.error;
+  }
 }
 
 function renderCell(cell) {
@@ -1495,6 +1604,7 @@ async function doExit() {
   state.workspace = null;
   state.cells = [];
   state.files = [];
+  state.downloads = [];
   render();
 }
 
@@ -1700,6 +1810,9 @@ function connectSSE() {
   es.addEventListener("trace", (e) => {
     applyTrace(JSON.parse(e.data));
   });
+  es.addEventListener("download", (e) => {
+    applyDownload(JSON.parse(e.data));
+  });
   es.addEventListener("map", (e) => {
     const data = JSON.parse(e.data);
     state.map_project = data.project;
@@ -1718,6 +1831,24 @@ function connectSSE() {
       render();
     }
   });
+}
+
+function applyDownload(download) {
+  if (!download || !download.id) return;
+  const index = (state.downloads || []).findIndex((item) => item.id === download.id);
+  if (index === -1) {
+    state.downloads = [...(state.downloads || []), download];
+  } else {
+    state.downloads[index] = { ...state.downloads[index], ...download };
+  }
+  const node = document.querySelector(
+    '.download-cell[data-download-id="' + download.id + '"]'
+  );
+  if (!node) {
+    renderCellsOnly();
+    return;
+  }
+  updateDownloadNode(node, state.downloads.find((item) => item.id === download.id));
 }
 
 function renderCellsOnly() {
