@@ -154,7 +154,7 @@ function applySnapshot(snap) {
   state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
-  state.files = snap.files || [];
+  state.files = workspaceFilePaths(snap.files);
   state.downloads = snap.downloads || [];
   state.settings = snap.settings || {
     model: "",
@@ -164,6 +164,12 @@ function applySnapshot(snap) {
     record_agent_steps: true,
   };
   applyTheme();
+}
+
+function workspaceFilePaths(files) {
+  return Array.isArray(files)
+    ? files.filter((path) => typeof path === "string" && path.trim())
+    : [];
 }
 
 function applyTheme() {
@@ -458,13 +464,11 @@ function renderCellsTab() {
 
   const attached = new Set();
   for (const cell of state.cells) {
-    wrap.append(renderCell(cell));
-    for (const download of state.downloads || []) {
-      if (download.parent_cell_id === cell.id) {
-        wrap.append(renderDownloadCell(download));
-        attached.add(download.id);
-      }
-    }
+    const children = (state.downloads || []).filter(
+      (download) => download.parent_cell_id === cell.id
+    );
+    wrap.append(renderCell(cell, children));
+    for (const download of children) attached.add(download.id);
   }
   for (const download of state.downloads || []) {
     if (!attached.has(download.id)) wrap.append(renderDownloadCell(download));
@@ -492,9 +496,9 @@ function downloadStatusLabel(download) {
   return "downloading";
 }
 
-function renderDownloadCell(download) {
+function renderDownloadCell(download, nested = false) {
   const box = el("div", {
-    class: "cell download-cell",
+    class: "download-cell" + (nested ? " download-subcell" : " cell"),
     "data-download-id": download.id,
   });
   const header = el("div", { class: "cell-header" });
@@ -573,7 +577,7 @@ function updateDownloadNode(node, download) {
   }
 }
 
-function renderCell(cell) {
+function renderCell(cell, downloadChildren = []) {
   const kind = cell.kind;
   const geoai = (cell.metadata && cell.metadata.geoai) || {};
   const generated = Boolean(geoai.generated);
@@ -750,6 +754,14 @@ function renderCell(cell) {
       );
       box.append(output);
     }
+  }
+
+  if (downloadChildren.length) {
+    const downloads = el("div", { class: "download-subcells" });
+    for (const download of downloadChildren) {
+      downloads.append(renderDownloadCell(download, true));
+    }
+    box.append(downloads);
   }
 
   return box;
@@ -1449,6 +1461,19 @@ function renderDataTab() {
     return wrap;
   }
 
+  const heading = el("div", { class: "data-heading" });
+  heading.append(
+    el("strong", { class: "data-heading-label", text: "Workspace files" }),
+    el("button", {
+      class: "data-refresh",
+      text: "↻",
+      title: "Refresh workspace files",
+      "aria-label": "Refresh workspace files",
+      onclick: () => refreshWorkspaceData(),
+    })
+  );
+  wrap.append(heading);
+
   const localRow = el("div", { class: "import-row" });
   const filesInput = el("input", { type: "file", multiple: "multiple", style: "display:none" });
   const folderInput = el("input", { type: "file", webkitdirectory: "", style: "display:none" });
@@ -1474,6 +1499,15 @@ function renderDataTab() {
   }
 
   return wrap;
+}
+
+async function refreshWorkspaceData() {
+  try {
+    await loadState();
+    toast("Workspace files refreshed");
+  } catch (e) {
+    toast(e.message || String(e));
+  }
 }
 
 // -- cell actions ----------------------------------------------------------
@@ -1831,7 +1865,7 @@ function connectSSE() {
   });
   es.addEventListener("files", (e) => {
     const data = JSON.parse(e.data);
-    state.files = data.files || [];
+    state.files = workspaceFilePaths(data.files);
     renderDataOnly();
   });
   es.addEventListener("settings", (e) => {
