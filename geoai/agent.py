@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 
 from pydantic_ai import Agent, DeferredToolRequests, ToolFailed
 from pydantic_ai.capabilities import AbstractCapability, ReinjectSystemPrompt
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import RunContext
 from pydantic_ai_harness import (
     ClearToolResults,
@@ -13,9 +15,9 @@ from pydantic_ai_harness import (
     SummarizingCompaction,
     TieredCompaction,
 )
+from pydantic_ai_harness.planning import InMemoryPlanStore
 
 from .context import GeoContext, set_context
-from pydantic_ai_harness.planning import InMemoryPlanStore
 from .skills import ALL_TOOLS
 
 SYSTEM_PROMPT = """You are GeoAI, a geospatial-analysis agent in a Geo-AI web workspace.
@@ -95,8 +97,7 @@ GeoLibre source to discover capabilities):
 """
 
 
-_agent: "Agent | None" = None
-_plan_store: "InMemoryPlanStore | None" = None
+_TOOL_RETRIES = 3
 
 # Keep only routing, interaction, and basic orientation tools in every model
 # request. Pydantic AI's ToolSearch capability automatically exposes the other
@@ -111,6 +112,9 @@ _CORE_TOOLS = frozenset(
         "find_files",
     }
 )
+
+_agent: "Agent | None" = None
+_plan_store: "InMemoryPlanStore | None" = None
 
 
 def resolve_model(model: str):
@@ -158,6 +162,22 @@ class ToolErrorFeedback(AbstractCapability[GeoContext]):
         raise ToolFailed(f"{type(error).__name__}: {error}")
 
 
+class NormalizeDuplicateToolNames(AbstractCapability[GeoContext]):
+    """Correct the ``name__name`` alias emitted by some compatible models."""
+
+    async def after_model_request(self, ctx, *, request_context, response):
+        parts = [
+            replace(part, tool_name=_deduplicate_tool_name(part.tool_name))
+            if isinstance(part, ToolCallPart)
+            else part
+            for part in response.parts
+        ]
+        return replace(response, parts=parts)
+
+
+def _deduplicate_tool_name(name: str) -> str:
+    left, separator, right = name.partition("__")
+    return left if separator and left == right else name
 
 
 def build_agent(ctx: GeoContext, model: str) -> Agent:
@@ -175,9 +195,11 @@ def build_agent(ctx: GeoContext, model: str) -> Agent:
         resolve_model(model),
         system_prompt=SYSTEM_PROMPT,
         output_type=[str, DeferredToolRequests],
+        retries={"tools": _TOOL_RETRIES},
         capabilities=[
             ReinjectSystemPrompt(),
             Planning(store=_plan_store),
+            NormalizeDuplicateToolNames(),
             ToolErrorFeedback(),
             TieredCompaction(
                 tiers=[

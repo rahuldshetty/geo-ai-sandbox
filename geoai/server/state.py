@@ -25,6 +25,8 @@ from pydantic_ai import (
     CancellationToken,
     DeferredToolRequests,
     DeferredToolResults,
+    ModelAPIError,
+    ModelHTTPError,
     RunCancelled,
 )
 from pydantic_ai_harness.planning import PlanItem
@@ -48,6 +50,57 @@ _RUNNABLE_KINDS = frozenset({"python", "prompt"})
 _PLAN_TOOLS = frozenset(
     {"write_plan", "add_task", "update_task_status", "update_task_statuses", "remove_task"}
 )
+
+# Only these tools are known to leave the workspace and live map unchanged.
+# Unknown and newly added tools are treated conservatively as state-changing
+# until they are explicitly reviewed and added here.
+_REPLAY_SAFE_TOOLS = frozenset(
+    {
+        "describe_geolibre_bridge",
+        "describe_map",
+        "discover_capabilities",
+        "find_files",
+        "inspect_output",
+        "list_colormaps",
+        "list_files",
+        "python_help",
+        "query_output",
+        "raster_info",
+        "raster_stats",
+        "read_file",
+        "read_plan",
+        "read_vector",
+        "request_user_input",
+        "sample_point",
+        "search_openaerialmap",
+        "search_tools",
+        "search_vantor_events",
+        "search_vantor_imagery",
+    }
+).union(_PLAN_TOOLS)
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 429})
+
+
+def _tool_may_change_state(name: str | None) -> bool:
+    return not name or name not in _REPLAY_SAFE_TOOLS
+
+
+def _is_transient_run_error(error: Exception) -> bool:
+    """Return whether replaying a workspace/map-safe attempt may succeed."""
+    if isinstance(error, ModelHTTPError):
+        return (
+            error.status_code in _TRANSIENT_HTTP_STATUSES
+            or error.status_code >= 500
+        )
+    # Non-HTTP ModelAPIError instances represent provider/transport failures.
+    return isinstance(error, ModelAPIError)
+
+
+def _retry_delay(error: Exception, attempt: int) -> float:
+    """Return bounded provider-aware backoff seconds for a retry."""
+    if isinstance(error, ModelHTTPError) and error.retry_after is not None:
+        return min(error.retry_after, 30.0)
+    return min(0.5 * (2 ** (attempt - 1)), 8.0)
 
 
 def _latest_plan_items(steps: list[dict]) -> list[PlanItem]:
@@ -131,6 +184,7 @@ def _event_to_step(event: object) -> dict | None:
             "type": "tool_result",
             "name": getattr(part, "tool_name", None),
             "content": _json_safe(getattr(part, "content", None)),
+            "outcome": getattr(part, "outcome", None),
             "tool_call_id": event.tool_call_id,
         }
     if ek == "part_start":
@@ -786,16 +840,18 @@ class AppState:
             )
 
         plan_store = current_plan_store()
+        initial_plan_items = _latest_plan_items(trace_steps) if resume else []
         if plan_store is not None:
             # The store is shared by the single worker. A different prompt may
             # run while this one waits for user input, and a server restart
             # recreates the in-memory store. Restore this prompt's own latest
             # snapshot before resuming instead of inheriting another run's plan.
-            plan_items = _latest_plan_items(trace_steps) if resume else []
-            await plan_store.set_items(plan_items)
+            await plan_store.set_items(initial_plan_items)
         recorded_tools: dict[str, dict] = {}
+        attempt_changed_state = False
 
         async def on_events(ctx, events):  # noqa: ARG001 - ctx unused
+            nonlocal attempt_changed_state
             async for event in events:
                 step = _event_to_step(event)
                 if step is not None:
@@ -827,6 +883,12 @@ class AppState:
                             recorded = recorded_tools.get(tool_call_id)
                             if recorded is not None:
                                 self._record_tool_result(recorded, step)
+                    if (
+                        step.get("type") == "tool_result"
+                        and step.get("outcome") == "success"
+                        and _tool_may_change_state(step.get("name"))
+                    ):
+                        attempt_changed_state = True
                 if (
                     plan_store is not None
                     and getattr(event, "event_kind", None) == "function_tool_result"
@@ -842,8 +904,12 @@ class AppState:
         source = self._augment_source(source) if resume is None else None
         max_attempts = self.settings.get("max_retries", 5)
         last_error = None
+        retry_block_reason = None
 
         for attempt in range(1, max_attempts + 1):
+            attempt_changed_state = False
+            if attempt > 1 and plan_store is not None:
+                await plan_store.set_items(initial_plan_items)
             try:
                 result = await agent.run(
                     source,
@@ -858,7 +924,14 @@ class AppState:
                 raise
             except Exception as exc:  # noqa: BLE001 - retry transient run failures
                 last_error = exc
-                if attempt < max_attempts:
+                transient = _is_transient_run_error(exc)
+                retry_block_reason = (
+                    "automatic replay was skipped because a tool changed the "
+                    "workspace or map; those completed changes were preserved"
+                    if attempt_changed_state
+                    else None
+                )
+                if transient and not attempt_changed_state and attempt < max_attempts:
                     note = {
                         "type": "text",
                         "content": (
@@ -870,6 +943,7 @@ class AppState:
                     if trace_path is not None:
                         trace.append_step(trace_path, note)
                     self.broadcast("trace", {"id": cell_id, "step": note})
+                    await asyncio.sleep(_retry_delay(exc, attempt))
                     continue
                 break
             else:
@@ -923,6 +997,8 @@ class AppState:
                 }
 
         error_text = str(last_error) if last_error is not None else "unknown error"
+        if retry_block_reason is not None:
+            error_text = f"{error_text} ({retry_block_reason})"
         self._finish_trace(cell_id, status="error", error=error_text)
         return {
             "output": None,

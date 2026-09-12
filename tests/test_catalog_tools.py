@@ -145,10 +145,16 @@ class CatalogToolTests(unittest.TestCase):
                 scene = search_openaerialmap([85.0, 27.0, 86.0, 28.0])["scenes"][0]
                 catalog_tools._scene_cache.clear()
                 layer_id = add_catalog_scene(scene["scene_key"])
+                repeated_layer_id = add_catalog_scene(scene["scene_key"])
             finally:
                 set_context(None)
 
-        self.assertEqual(layer_id, "layer-1")
+        self.assertEqual(layer_id["status"], "added")
+        self.assertEqual(layer_id["layer_id"], "layer-1")
+        self.assertEqual(repeated_layer_id["status"], "existing")
+        self.assertEqual(repeated_layer_id["layer_id"], "layer-1")
+        self.assertEqual(repeated_layer_id["name"], "Persisted scene")
+        self.assertEqual(len(fake_map.project["layers"]), 1)
         metadata = fake_map.project["layers"][0]["metadata"]["geoaiCatalog"]
         self.assertEqual(metadata["id"], "oam-persisted")
         self.assertEqual(metadata["asset_url"], "https://example.com/aerial.tif")

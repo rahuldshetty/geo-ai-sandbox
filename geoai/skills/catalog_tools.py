@@ -306,12 +306,13 @@ def search_openaerialmap(
     return {"scenes": scenes, "found": int(found), "page": page, "limit": limit}
 
 
-def add_catalog_scene(scene_key: str, name: str | None = None) -> str:
+def add_catalog_scene(scene_key: str, name: str | None = None) -> dict:
     """Download a searched scene into ``data/`` and add the local copy to the map.
 
     The download is intentionally completed before the map layer is created.
     This keeps the saved project independent of the catalog's remote COG or
     TiTiler service and gives the user a progress cell while the asset arrives.
+    Repeated calls return the existing layer instead of adding a duplicate.
     """
     scene = _cached_scene(scene_key)
     if not scene:
@@ -325,6 +326,23 @@ def add_catalog_scene(scene_key: str, name: str | None = None) -> str:
     key_suffix = re.sub(r"[^A-Za-z0-9]+", "", scene_key.rsplit(":", 1)[-1])[:12]
     filename = f"{provider.lower()}-{item_id}-{key_suffix}{suffix}"
     existing = ctx.workspace.resolve_under(ctx.workspace.data, filename)
+    rel = existing.relative_to(ctx.workspace.root).as_posix()
+    for layer in m.project.get("layers", []):
+        metadata = layer.get("metadata") or {}
+        catalog = metadata.get("geoaiCatalog") or {}
+        if (
+            catalog.get("scene_key") == scene_key
+            or catalog.get("local_path") == rel
+            or metadata.get("geoaiSourcePath") == rel
+        ):
+            layer_id = layer.get("id")
+            if isinstance(layer_id, str) and layer_id:
+                return {
+                    "status": "existing",
+                    "layer_id": layer_id,
+                    "name": layer.get("name"),
+                    "local_path": rel,
+                }
     downloaded = (
         str(existing)
         if existing.is_file() and existing.stat().st_size > 0
@@ -359,7 +377,12 @@ def add_catalog_scene(scene_key: str, name: str | None = None) -> str:
             layer["metadata"]["geoaiCatalog"]["local_path"] = rel
             break
     _persist(ctx, m)
-    return layer_id
+    return {
+        "status": "added",
+        "layer_id": layer_id,
+        "name": layer_name,
+        "local_path": rel,
+    }
 
 
 def download_catalog_scene(scene_key: str, filename: str | None = None) -> str:
