@@ -484,25 +484,6 @@ button {
   border-left: 3px solid var(--primary);
 }
 
-.download-subcells {
-  margin-top: 12px;
-  padding: 12px;
-  border-top: 1px solid var(--border);
-  background: var(--surface-2);
-}
-
-.download-subcell {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--primary);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.download-subcell + .download-subcell {
-  margin-top: 8px;
-}
-
 .download-filename {
   min-width: 0;
   overflow: hidden;
@@ -959,6 +940,17 @@ button {
 
 .trace-step.tool-result {
   border-left: 3px solid var(--accent);
+}
+
+.download-trace {
+  border-left: 3px solid var(--primary);
+}
+
+.download-trace-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
 }
 
 .trace-step > summary {

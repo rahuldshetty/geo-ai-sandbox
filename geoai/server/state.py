@@ -321,6 +321,7 @@ class AppState:
         job_id = event.get("id")
         if not job_id:
             return
+        files = None
         with self._download_lock:
             cell = self._download_cells.get(job_id)
             if cell is None:
@@ -348,7 +349,15 @@ class AppState:
                 if key in event:
                     cell[key] = event[key]
             snapshot = dict(cell)
+            if snapshot.get("status") == "done" and self.workspace is not None:
+                # Do not call self.list_files() here: prompt execution holds
+                # state.lock while a parallel download worker emits this event.
+                # Reading the workspace directly keeps the completion event
+                # from waiting on the run worker that is waiting on the download.
+                files = self.workspace.list_files()
         self.broadcast("download", snapshot)
+        if files is not None:
+            self.broadcast("files", {"files": files})
 
     def _downloads_snapshot(self) -> list[dict]:
         with self._download_lock:

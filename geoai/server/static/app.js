@@ -151,7 +151,7 @@ function isGeneratedCell(cell) {
 function applySnapshot(snap) {
   state.active_workspace = snap.active_workspace;
   state.workspaces = snap.workspaces || [];
-  state.cells = (snap.cells || []).filter((cell) => !isGeneratedCell(cell));
+  state.cells = normalizeCells(snap.cells);
   state.map_project = snap.map_project;
   state.map_app_url = snap.map_app_url;
   state.files = workspaceFilePaths(snap.files);
@@ -169,6 +169,17 @@ function applySnapshot(snap) {
 function workspaceFilePaths(files) {
   return Array.isArray(files)
     ? files.filter((path) => typeof path === "string" && path.trim())
+    : [];
+}
+
+function normalizeCells(cells) {
+  return Array.isArray(cells)
+    ? cells
+        .filter((cell) => cell && typeof cell === "object" && !isGeneratedCell(cell))
+        .map((cell) => ({
+          ...cell,
+          source: cell.source == null ? "" : String(cell.source),
+        }))
     : [];
 }
 
@@ -496,9 +507,9 @@ function downloadStatusLabel(download) {
   return "downloading";
 }
 
-function renderDownloadCell(download, nested = false) {
+function renderDownloadCell(download) {
   const box = el("div", {
-    class: "download-cell" + (nested ? " download-subcell" : " cell"),
+    class: "cell download-cell",
     "data-download-id": download.id,
   });
   const header = el("div", { class: "cell-header" });
@@ -513,7 +524,13 @@ function renderDownloadCell(download, nested = false) {
   );
   box.append(header);
 
-  const body = el("div", { class: "download-body" });
+  box.append(renderDownloadBody(download));
+  updateDownloadNode(box, download);
+  return box;
+}
+
+function renderDownloadBody(download, className = "download-body") {
+  const body = el("div", { class: className });
   body.append(
     el("div", {
       class: "download-description",
@@ -532,9 +549,30 @@ function renderDownloadCell(download, nested = false) {
     ? el("div", { class: "download-error", text: download.error })
     : null;
   if (error) body.append(error);
-  box.append(body);
-  updateDownloadNode(box, download);
-  return box;
+  return body;
+}
+
+function renderDownloadTraceNode(download) {
+  const node = el("div", {
+    class: "trace-step download-trace download-progress-node",
+    "data-download-id": download.id,
+  });
+  const summary = el("div", { class: "download-trace-summary" });
+  summary.append(
+    el("span", { class: "trace-icon", text: "↓" }),
+    el("span", { class: "trace-name", text: "download" }),
+    el("span", {
+      class: "trace-preview download-filename",
+      text: download.filename || "download",
+    }),
+    el("span", {
+      class: "agent-action-status download-status status-" + (download.status || "running"),
+      text: downloadStatusLabel(download),
+    })
+  );
+  node.append(summary, renderDownloadBody(download, "trace-body download-body"));
+  updateDownloadNode(node, download);
+  return node;
 }
 
 function updateDownloadNode(node, download) {
@@ -580,6 +618,7 @@ function updateDownloadNode(node, download) {
 function renderCell(cell, downloadChildren = []) {
   const kind = cell.kind;
   const geoai = (cell.metadata && cell.metadata.geoai) || {};
+  const source = cell.source == null ? "" : String(cell.source);
   const generated = Boolean(geoai.generated);
   const box = el("div", {
     class: "cell" + (generated ? " generated-cell" : ""),
@@ -673,7 +712,7 @@ function renderCell(cell, downloadChildren = []) {
   const body = el("div", { class: "cell-body" });
   if (kind === "markdown") {
     const md = el("div", { class: "markdown" });
-    md.innerHTML = renderMarkdown(cell.source);
+    md.innerHTML = renderMarkdown(source);
     body.append(md);
   } else if (kind === "tool") {
     const input =
@@ -683,9 +722,9 @@ function renderCell(cell, downloadChildren = []) {
     body.append(expandableContent("Input", input));
   } else {
     const ta = el("textarea", {
-      rows: Math.min(12, Math.max(2, cell.source.split("\n").length)),
+      rows: Math.min(12, Math.max(2, source.split("\n").length)),
     });
-    ta.value = cell.source;
+    ta.value = source;
     if (generated) {
       ta.readOnly = true;
     } else {
@@ -725,7 +764,13 @@ function renderCell(cell, downloadChildren = []) {
 
     if (kind === "prompt") {
       const trace = el("div", { class: "trace" });
-      for (const node of renderTraceSteps(cell.trace || [], cell)) trace.append(node);
+      for (const node of renderTraceSteps(cell.trace || [], cell)) {
+        if (node) trace.append(node);
+      }
+      for (const download of downloadChildren) {
+        const node = renderDownloadTraceNode(download);
+        if (node) trace.append(node);
+      }
       box.append(trace);
     }
 
@@ -754,14 +799,6 @@ function renderCell(cell, downloadChildren = []) {
       );
       box.append(output);
     }
-  }
-
-  if (downloadChildren.length) {
-    const downloads = el("div", { class: "download-subcells" });
-    for (const download of downloadChildren) {
-      downloads.append(renderDownloadCell(download, true));
-    }
-    box.append(downloads);
   }
 
   return box;
@@ -922,8 +959,9 @@ function editMarkdown(cell) {
   const box = document.querySelector('.cell[data-cell-id="' + cell.id + '"]');
   if (!box) return;
   const body = box.querySelector(".cell-body");
-  const ta = el("textarea", { rows: Math.min(12, Math.max(2, cell.source.split("\n").length)) });
-  ta.value = cell.source;
+  const source = cell.source == null ? "" : String(cell.source);
+  const ta = el("textarea", { rows: Math.min(12, Math.max(2, source.split("\n").length)) });
+  ta.value = source;
   ta.addEventListener("blur", async () => {
     await updateCell(cell.id, ta.value);
     render();
@@ -1840,16 +1878,18 @@ function connectSSE() {
   es.addEventListener("cell", (e) => {
     const data = JSON.parse(e.data);
     if (isGeneratedCell(data)) return;
-    const idx = state.cells.findIndex((c) => c.id === data.id);
+    const normalized = normalizeCells([data])[0];
+    if (!normalized) return;
+    const idx = state.cells.findIndex((c) => c.id === normalized.id);
     if (idx === -1) {
-      if (data.kind) state.cells.push(data);
+      if (normalized.kind) state.cells.push(normalized);
     } else {
-      state.cells[idx] = { ...state.cells[idx], ...data };
+      state.cells[idx] = { ...state.cells[idx], ...normalized };
     }
     renderCellsOnly();
     refreshStatusBar();
-    if (data.status === "waiting_for_input" && data.interaction) {
-      revealInteraction(data.id);
+    if (normalized.status === "waiting_for_input" && normalized.interaction) {
+      revealInteraction(normalized.id);
     }
   });
   es.addEventListener("trace", (e) => {
@@ -1886,8 +1926,16 @@ function applyDownload(download) {
   } else {
     state.downloads[index] = { ...state.downloads[index], ...download };
   }
+  if (
+    download.status === "done" &&
+    download.path &&
+    !state.files.includes(download.path)
+  ) {
+    state.files = [...state.files, download.path];
+    renderDataOnly();
+  }
   const node = document.querySelector(
-    '.download-cell[data-download-id="' + download.id + '"]'
+    '[data-download-id="' + download.id + '"]'
   );
   if (!node) {
     renderCellsOnly();
