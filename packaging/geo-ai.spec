@@ -4,7 +4,7 @@
 
 import os
 
-from PyInstaller.utils.hooks import collect_all, copy_metadata
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
@@ -17,6 +17,12 @@ hiddenimports = [
     "uvicorn.protocols.http.h11_impl",
     "uvicorn.lifespan.on",
 ]
+
+# The geoai package and geoai.server load most of their modules lazily via
+# __getattr__/import_module (agent, context, map_view, skills, server.app,
+# server.state, ...), which PyInstaller's static analysis cannot see. Pull in
+# every geoai submodule explicitly so the frozen bundle contains the whole app.
+hiddenimports += collect_submodules("geoai")
 
 # Dynamic imports and bundled data PyInstaller cannot see statically:
 # pydantic-ai resolves providers/models by name (infer_model/infer_provider),
