@@ -35,6 +35,56 @@ def model_from_env() -> str:
     return os.getenv("GEOAI_MODEL", DEFAULT_MODEL)
 
 
+# Model provider prefix -> env var holding its API key (None = no key required).
+_PROVIDER_API_KEY_ENV = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "google-gla": "GOOGLE_API_KEY",
+    "google-gemini": "GOOGLE_API_KEY",
+    "ollama": None,
+}
+
+
+def model_provider(model: str) -> str:
+    """Return the provider prefix of a model string (default ``openai``)."""
+    return model.split(":", 1)[0].lower() if ":" in model else "openai"
+
+
+def api_key_env_for(model: str) -> str | None:
+    """Return the env var holding the API key for ``model``'s provider.
+
+    Returns ``None`` for providers that need no key (e.g. ``ollama``).
+    """
+    return _PROVIDER_API_KEY_ENV.get(model_provider(model))
+
+
+def validate_env() -> None:
+    """Refuse to start when the configured model's provider key is missing.
+
+    The key is read from ``<app_root>/.env`` (loaded at import time) or from an
+    existing environment variable. Raises ``SystemExit`` with a setup hint when
+    the required variable is absent or empty, so a user never hits a late 500
+    while creating a workspace.
+    """
+    model = model_from_env()
+    key_var = api_key_env_for(model)
+    if key_var is None:
+        return
+    if os.getenv(key_var, "").strip():
+        return
+    env_file = app_root() / ".env"
+    if env_file.is_file():
+        detail = f"Set {key_var} in {env_file}, or export it in the environment."
+    else:
+        detail = (
+            f"Copy .env.example to {env_file}, set {key_var} there, "
+            f"or export {key_var} in the environment."
+        )
+    raise SystemExit(
+        f"Geo-AI: cannot start — {key_var} is not set (model '{model}'). {detail}"
+    )
+
+
 def max_retries() -> int:
     """Return the prompt-run retry cap, overridable via ``GEOAI_MAX_RETRIES``.
 

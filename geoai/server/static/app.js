@@ -411,8 +411,10 @@ function renderSidePanel() {
     tabButton("Data")
   );
   const content = el("div", { id: "tab-content" });
-  content.append(state.selected_tab === "Cells" ? renderCellsTab() : renderDataTab());
-  panel.append(tabbar, content, renderStatusBar());
+  const cellsActive = state.selected_tab === "Cells";
+  const toolbar = cellsActive && state.active_workspace ? renderAddCellRow() : null;
+  content.append(cellsActive ? renderCellsTab() : renderDataTab());
+  panel.append(tabbar, toolbar, content, renderStatusBar());
   return panel;
 }
 
@@ -427,6 +429,16 @@ function tabButton(name) {
   });
 }
 
+function renderAddCellRow() {
+  const addRow = el("div", { class: "add-cell-row" });
+  addRow.append(
+    el("button", { text: "+ Markdown", onclick: () => addCell("markdown") }),
+    el("button", { text: "+ Python", onclick: () => addCell("python") }),
+    el("button", { text: "+ Prompt", onclick: () => addCell("prompt") })
+  );
+  return addRow;
+}
+
 function renderCellsTab() {
   const wrap = el("div", {});
 
@@ -436,14 +448,6 @@ function renderCellsTab() {
     );
     return wrap;
   }
-
-  const addRow = el("div", { class: "add-cell-row" });
-  addRow.append(
-    el("button", { text: "+ Markdown", onclick: () => addCell("markdown") }),
-    el("button", { text: "+ Python", onclick: () => addCell("python") }),
-    el("button", { text: "+ Prompt", onclick: () => addCell("prompt") })
-  );
-  wrap.append(addRow);
 
   if (!state.cells.length) {
     wrap.append(el("div", { class: "empty-hint", text: "No cells yet — add a cell above." }));
@@ -1361,12 +1365,36 @@ function renderDataTab() {
 
 // -- cell actions ----------------------------------------------------------
 
+function focusCell(cell) {
+  window.requestAnimationFrame(() => {
+    const box = document.querySelector('.cell[data-cell-id="' + cell.id + '"]');
+    if (!box) return;
+    box.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (cell.kind === "markdown") {
+      editMarkdown(cell);
+    } else {
+      const ta = box.querySelector("textarea");
+      if (ta) ta.focus();
+    }
+  });
+}
+
 async function addCell(kind) {
   if (!state.active_workspace) {
     toast("No workspace open");
     return;
   }
-  await postThenRender("POST", "/api/cells", { kind, source: "", index: null });
+  const before = new Set(state.cells.map((c) => c.id));
+  try {
+    const snap = await api("POST", "/api/cells", { kind, source: "", index: null });
+    applySnapshot(snap);
+    render();
+    syncMap();
+    const cell = state.cells.find((c) => !before.has(c.id));
+    if (cell) focusCell(cell);
+  } catch (e) {
+    toast(e.message || String(e));
+  }
 }
 
 async function updateCell(cellId, source) {
