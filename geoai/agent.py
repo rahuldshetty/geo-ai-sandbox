@@ -116,6 +116,13 @@ def resolve_model(model: str):
     if not base_url or not model.startswith("openai:"):
         return model
 
+    # OPENAI_BASE_URL is a base URL: pydantic-ai appends /chat/completions
+    # itself. Tolerate a user-supplied full endpoint so a trailing
+    # /chat/completions doesn't double-suffix into a 404.
+    base_url = base_url.rstrip("/")
+    if base_url.endswith("/chat/completions"):
+        base_url = base_url[: -len("/chat/completions")].rstrip("/")
+
     from pydantic_ai.models import infer_model, infer_provider
     from pydantic_ai.providers.openai import OpenAIProvider
 
