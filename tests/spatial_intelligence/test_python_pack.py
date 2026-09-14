@@ -148,6 +148,44 @@ class PythonExecutorTests(PythonTestCase):
             "=> (6, 4326, ['Point'], 3)",
         )
 
+    def test_relative_paths_resolve_from_the_workspace_root(self):
+        executor = self.executor()
+        (self.workspace.data / "countries.geojson").write_text(
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"POP_EST": 1_400_000_000},
+                            "geometry": {"type": "Point", "coordinates": [0, 0]},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        preview = executor.run(
+            "import os\n"
+            "frame = gpd.read_file('data/countries.geojson')\n"
+            "(os.getcwd(), len(frame), int(frame['POP_EST'].iloc[0]))"
+        )
+
+        self.assertEqual(
+            preview, "=> (" + repr(str(self.workspace.root)) + ", 1, 1400000000)"
+        )
+
+        self.assertEqual(
+            executor.run(
+                "gpd.read_file('data/countries.geojson')"
+                ".to_file('results/copy.geojson', driver='GeoJSON')\n"
+                "'written'"
+            ),
+            "=> 'written'",
+        )
+        self.assertTrue((self.workspace.results / "copy.geojson").is_file())
+
     def test_ws_reads_writes_and_lists_inside_the_workspace(self):
         executor = self.executor()
 
@@ -214,7 +252,7 @@ class PythonExecutorTests(PythonTestCase):
 
         approved = self.executor(approved=True)
 
-        here = "=> " + repr(str(Path.cwd()))
+        here = "=> " + repr(str(self.workspace.root))
         self.assertEqual(approved.run("import os\nos.getcwd()"), here)
         self.assertEqual(approved.run("__import__('os').getcwd()"), here)
         self.assertEqual(approved.run("eval('1 + 1')"), "=> 2")
@@ -386,7 +424,9 @@ class PythonPackTests(PythonTestCase):
         registry, _ = self.build_pack(approved=True)
         run = registry.get("run_python").callable
 
-        self.assertEqual(run("import os\nos.getcwd()"), "=> " + repr(str(Path.cwd())))
+        self.assertEqual(
+            run("import os\nos.getcwd()"), "=> " + repr(str(self.workspace.root))
+        )
         self.assertNotIn("blocked", run("import subprocess\nsubprocess.__name__"))
 
     def test_python_help_describes_the_sandbox_namespace(self):

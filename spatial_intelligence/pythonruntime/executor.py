@@ -2,10 +2,17 @@
 
 The executor owns the sandbox itself: it parses a snippet, refuses it in safe
 mode when :func:`~spatial_intelligence.pythonruntime.sandbox.guard` finds an
-escape vector, runs it against a namespace holding the geospatial stack and the
-path-confined ``ws`` facade, and captures stdout/stderr plus the last
-expression's ``repr``. A raised exception comes back as a traceback string, not
-as a raised error: the model reads it and adapts in the same run.
+escape vector, runs it from the workspace root against a namespace holding the
+geospatial stack and the path-confined ``ws`` facade, and captures
+stdout/stderr plus the last expression's ``repr``. A raised exception comes
+back as a traceback string, not as a raised error: the model reads it and
+adapts in the same run.
+
+The snippet's working directory is the workspace root, so a relative path means
+the same thing inside a snippet as it does in every other tool: ``data/x`` is
+``<workspace>/data/x``. The geospatial stack resolves paths in C, where no
+Python-level shim can reach, so binding the process cwd is the only mechanism
+that makes ``gpd.read_file("data/x.geojson")`` agree with ``read_file``.
 
 ``approved`` is the dangerous-mode flag (the user granted approval), replacing
 the module-global toggle the previous package kept. One executor lives per
@@ -20,6 +27,7 @@ import ast
 import contextlib
 import io
 import json
+import os
 import threading
 import traceback
 
@@ -44,6 +52,11 @@ from .sandbox import guard
 #: Wall-clock cap on one snippet. The snippet runs on a daemon thread, so an
 #: abandoned snippet cannot keep the process alive.
 TIMEOUT = 300.0
+
+#: Serializes snippets while they hold the process working directory at their
+#: workspace root. The process has one cwd, so two snippets from different
+#: workspaces running at once would resolve each other's relative paths.
+_CWD_LOCK = threading.Lock()
 
 
 class _ConfinedWorkspace:
@@ -159,8 +172,20 @@ class PythonExecutor:
                 err_buf.write(traceback.format_exc())
 
         thread = threading.Thread(target=_target, daemon=True)
-        thread.start()
-        thread.join(TIMEOUT)
+        previous_cwd = os.getcwd()
+        with _CWD_LOCK:
+            os.chdir(self.workspace.root)
+            try:
+                thread.start()
+                thread.join(TIMEOUT)
+            finally:
+                # A timed-out snippet keeps running on an abandoned daemon thread
+                # that may still resolve relative paths, so the cwd stays at the
+                # workspace root until it finishes by itself. Every later snippet
+                # chdirs to its own root first, so a stale cwd cannot leak into a
+                # different workspace.
+                if not thread.is_alive():
+                    os.chdir(previous_cwd)
         if thread.is_alive():
             return self.output.store(f"run_python timed out after {int(TIMEOUT)}s")
 

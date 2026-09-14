@@ -171,10 +171,13 @@ workspace.json   manifest (outputs + version)
   no Windows wheels; all other raster tools are rasterio-based and work without it.
 - `run_python` runs in the kernel process behind a cooperative AST guard: the
   geospatial stack and basic stdlib are importable, while subprocess, network,
-  dynamic execution, and raw command calls are rejected. Dangerous mode (the
-  menu-bar toggle) lifts the guard entirely. `band_math` evaluates a NumPy
-  expression and therefore also requires approval; `run_python` with numpy is the
-  alternative while dangerous mode is off.
+  dynamic execution, and raw command calls are rejected. Snippets run with the
+  working directory at the active workspace root, so a relative path means the
+  same thing inside a snippet as it does in every other tool (`data/x` is
+  `<workspace>/data/x`); snippets are serialized while they hold that directory.
+  Dangerous mode (the menu-bar toggle) lifts the guard entirely. `band_math`
+  evaluates a NumPy expression and therefore also requires approval;
+  `run_python` with numpy is the alternative while dangerous mode is off.
 - Raster and vector tools write under `results/`, `maps/`, or `data/` only, and
   every tool path is confined to the active workspace.
 

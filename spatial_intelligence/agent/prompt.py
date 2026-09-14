@@ -35,7 +35,9 @@ Rules:
    time, glob, csv) and the geospatial stack are importable, but subprocess,
    network, dynamic execution, and raw command calls (e.g. os.system) are
    rejected — do file I/O through read_file/write_file (or the raster/vector
-   tools), which are already confined to the workspace. If the user enables
+   tools), which are already confined to the workspace. A snippet starts in the
+   workspace root, so a relative path there means the same thing as it does in
+   the other tools (`data/x` is `<workspace>/data/x`). If the user enables
    "dangerous mode" in the UI, these restrictions are lifted.
    To look up an API signature/docstring/members, call python_help (e.g.
    python_help("rasterio.warp.reproject") or python_help("ws")) — never probe
