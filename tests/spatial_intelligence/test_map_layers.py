@@ -251,6 +251,44 @@ class MapLayerServiceTests(MapTestCase):
         self.assertEqual(result["mapView"]["zoom"], 9.0)
         self.assertEqual(self.reload_map().project["mapView"]["zoom"], 9.0)
 
+    def test_add_geojson_keeps_a_custom_name_and_resolves_by_it(self):
+        self.geojson_file("data/points.geojson")
+
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Cities > 1M (2020)"
+        )
+
+        self.assertEqual(layerops.find_layer(self.map, layer_id)["name"], "Cities > 1M (2020)")
+        self.assertEqual(
+            layer_with(self.snapshot_project(), layer_id)["name"], "Cities > 1M (2020)"
+        )
+        self.assertEqual(
+            layerops.style_layer(
+                self.workspace, self.map, "Cities > 1M (2020)", {"fillOpacity": 0.4}
+            )["layerId"],
+            layer_id,
+        )
+
+    def test_add_writers_clean_the_layer_name(self):
+        self.geojson_file("data/points.geojson")
+
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "  Padded name  "
+        )
+
+        self.assertEqual(layerops.find_layer(self.map, layer_id)["name"], "Padded name")
+
+    def test_add_writers_reject_a_blank_or_reserved_name(self):
+        self.geojson_file("data/points.geojson")
+
+        for name in ("   ", "__basemap__"):
+            with self.subTest(name=name):
+                with self.assertRaises(ToolInputError):
+                    layerops.add_geojson(
+                        self.workspace, self.map, "data/points.geojson", name
+                    )
+        self.assertEqual(self.map.describe()["layerCount"], 0)
+
     def test_style_layer_reports_an_unknown_layer(self):
         with self.assertRaises(ToolInputError):
             layerops.style_layer(self.workspace, self.map, "nope", {"fillColor": "#fff"})

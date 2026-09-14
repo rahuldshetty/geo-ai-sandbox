@@ -39,6 +39,7 @@ __all__ = [
     "add_vector",
     "add_wms",
     "classify_layer",
+    "clean_layer_name",
     "clear_layers",
     "describe",
     "export_html",
@@ -210,6 +211,28 @@ def repoint_local_rasters(
 # -- writers ---------------------------------------------------------------
 
 
+def clean_layer_name(name: str) -> str:
+    """Return a new layer's display name, cleaned the way GeoLibre's own setter is.
+
+    GeoLibre strips and refuses a blank name when a layer is *renamed* but not
+    when one is *added*, so a padded or empty name would otherwise persist
+    verbatim and render as an unreferenceable row. The basemap pseudo-id is
+    refused too: ``resolve_layer_ids`` passes it through as the basemap
+    sentinel, so a layer wearing it would be silently unaddressable there.
+
+    Raises:
+        ToolInputError: If the name is blank or the reserved basemap id.
+    """
+    clean = str(name).strip()
+    if not clean:
+        raise ToolInputError("a layer name must be a non-empty string")
+    if clean == geolibre_authoring.BASEMAP_LAYER_ID:
+        raise ToolInputError(
+            f"{geolibre_authoring.BASEMAP_LAYER_ID!r} is reserved for the basemap"
+        )
+    return clean
+
+
 def add_geojson(
     workspace: Workspace,
     map_obj: Map,
@@ -221,9 +244,11 @@ def add_geojson(
     """Add a GeoJSON layer and return its id.
 
     ``data`` may be a workspace-relative path, an http(s) URL, or a literal
-    GeoJSON string. ``style`` is applied through the same path as
-    :func:`style_layer` (see there for the accepted keys).
+    GeoJSON string; ``name`` is the layer's display name (unique names are what
+    later by-name references resolve against). ``style`` is applied through the
+    same path as :func:`style_layer` (see there for the accepted keys).
     """
+    name = clean_layer_name(name)
     if not _is_url(data) and not _is_geojson_literal(data):
         data = str(workspace.resolve(data, must_exist=True))
     layer_id = map_obj.add_geojson(data, name)
@@ -245,8 +270,10 @@ def add_vector(
 ) -> str:
     """Add a vector layer from a path/URL and return its id.
 
-    ``style`` is applied through the same path as :func:`style_layer`.
+    ``name`` is the layer's display name. ``style`` is applied through the same
+    path as :func:`style_layer`.
     """
+    name = clean_layer_name(name)
     if not _is_url(data):
         data = str(workspace.resolve(data, must_exist=True))
     layer_id = map_obj.add_vector(
@@ -278,6 +305,7 @@ def add_raster(
     ``file_url`` is given, embedded as that stable ``/api/files/<rel>`` URL (the
     workspace path is tagged in layer metadata so it can be re-pointed later).
     """
+    name = clean_layer_name(name)
     rel = None
     if not _is_url(path):
         resolved = workspace.resolve(path, must_exist=True)
@@ -295,7 +323,7 @@ def add_tile_layer(
     workspace: Workspace, map_obj: Map, url: str, name: str, attribution: str | None = None
 ) -> str:
     """Add an XYZ tile layer and return its id."""
-    layer_id = map_obj.add_tile_layer(url, name, attribution=attribution)
+    layer_id = map_obj.add_tile_layer(url, clean_layer_name(name), attribution=attribution)
     persist_map(map_obj, workspace)
     return layer_id
 
@@ -309,7 +337,7 @@ def add_wms(
     styles: str | None = None,
 ) -> str:
     """Add a WMS tiled layer and return its id."""
-    layer_id = map_obj.add_wms(endpoint, layers, name, styles=styles)
+    layer_id = map_obj.add_wms(endpoint, layers, clean_layer_name(name), styles=styles)
     persist_map(map_obj, workspace)
     return layer_id
 

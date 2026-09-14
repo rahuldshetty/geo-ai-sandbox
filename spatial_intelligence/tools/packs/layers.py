@@ -98,8 +98,9 @@ class LayersPack:
         """Add a GeoJSON layer and return its id.
 
         ``data`` (or its synonym ``path``) may be a workspace-relative path, an
-        http(s) URL, or a literal GeoJSON string. ``style`` is applied like
-        ``style_layer`` does; see ``list_style_keys``.
+        http(s) URL, or a literal GeoJSON string; ``name`` is the layer's display
+        name, which later calls may reference (keep it unique per map). ``style``
+        is applied like ``style_layer`` does; see ``list_style_keys``.
         """
         layer_id = layerops.add_geojson(
             self._rt.workspace, self._map, _source(data, path), name, style=style

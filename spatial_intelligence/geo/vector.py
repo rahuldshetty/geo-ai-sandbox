@@ -14,6 +14,7 @@ from typing import Any
 
 import geopandas as gpd
 
+from ..map import layers as layerops
 from ..map import styles
 from ..workspace import Workspace
 
@@ -105,6 +106,7 @@ def add_vector_to_map(
     layer's own style; the result is mirrored into the project-level style map
     GeoLibre's app actually reads (see :mod:`spatial_intelligence.map.styles`).
     """
+    name = layerops.clean_layer_name(name)
     gdf = gpd.read_file(str(workspace.resolve(path, must_exist=True)))
     if column:
         layer_id = map_obj.add_gdf(gdf, name, column=column, colormap=palette)
