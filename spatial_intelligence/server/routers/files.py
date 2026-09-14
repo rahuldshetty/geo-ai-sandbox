@@ -1,0 +1,87 @@
+"""Workspace file serving and imports.
+
+The ``/api/files`` route is what the embedded map fetches: the GeoLibre iframe
+is served from its own loopback origin, so a workspace raster is a cross-origin
+read. This server owns the file, so it answers with a permissive origin while
+the path stays confined to the active workspace, and ``FileResponse`` streams
+with HTTP Range support for the in-browser GeoTIFF reader.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, File, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+from ...contracts.errors import WorkspaceError
+from ..deps import app_state
+
+router = APIRouter(tags=["files"])
+
+FILE_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Range",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+}
+
+
+class ImportUrl(BaseModel):
+    url: str
+    filename: str | None = None
+
+
+class FilePath(BaseModel):
+    path: str
+
+
+@router.api_route("/api/files/{rel_path:path}", methods=["GET", "HEAD"])
+def api_workspace_file(rel_path: str) -> FileResponse:
+    """Serve one workspace file to the map iframe."""
+    workspace = app_state().workspaces.workspace
+    if workspace is None:
+        raise HTTPException(status_code=409, detail="no workspace open")
+    try:
+        path = workspace.resolve(rel_path, must_exist=True)
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="not a file")
+    return FileResponse(path, headers=FILE_CORS)
+
+
+@router.api_route("/api/files/{rel_path:path}", methods=["OPTIONS"])
+def api_workspace_file_preflight(rel_path: str) -> Response:
+    """Answer the CORS preflight for a workspace file."""
+    return Response(status_code=200, headers=FILE_CORS)
+
+
+@router.post("/api/import/local")
+async def api_import_local(files: list[UploadFile] = File(...)) -> dict:
+    """Copy uploaded files (or a folder's files) into ``data/``."""
+    if app_state().workspaces.workspace is None:
+        raise HTTPException(status_code=409, detail="no workspace open")
+    uploaded: list[tuple[str, bytes]] = []
+    for upload in files:
+        uploaded.append((upload.filename or "", await upload.read()))
+    return app_state().import_local(uploaded)
+
+
+@router.post("/api/import/url")
+def api_import_url(body: ImportUrl) -> dict:
+    """Download a URL into ``data/``."""
+    if app_state().workspaces.workspace is None:
+        raise HTTPException(status_code=409, detail="no workspace open")
+    if not body.url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="url must be http(s)")
+    return app_state().import_url(body.url, body.filename)
+
+
+@router.post("/api/map/project")
+def api_set_map_project(body: dict) -> dict:
+    """Adopt a map project pushed by the browser and persist it."""
+    if app_state().workspaces.workspace is None:
+        raise HTTPException(status_code=409, detail="no workspace open")
+    project = body.get("project")
+    if not isinstance(project, dict):
+        raise HTTPException(status_code=400, detail="project must be an object")
+    return app_state().set_map_project(project)

@@ -162,8 +162,9 @@ ENV/
 env.bak/
 venv.bak/
 
-# Downloaded browser assets (bootstrapped by geoai.server.assets)
+# Downloaded browser assets (bootstrapped by the server on first start)
 geoai/server/static/vendor/marked.min.js
+spatial_intelligence/web/vendor/marked.min.js
 
 # Spyder project settings
 .spyderproject
@@ -229,3 +230,6 @@ __marimo__/
 workspaces/
 ARCHITECTURE.local.md
 opencode-go.env
+
+
+hack/

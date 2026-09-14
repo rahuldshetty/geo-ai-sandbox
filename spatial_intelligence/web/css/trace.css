@@ -1,0 +1,197 @@
+/* spatial_intelligence — agent trace steps, plan list, trace I/O. */
+
+/* -- agent trace ---------------------------------------------------------- */
+
+.trace {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.trace:empty {
+  display: none;
+}
+
+.trace-step {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.trace-step.tool-call {
+  border-left: 3px solid var(--primary);
+}
+
+.trace-step.tool-result {
+  border-left: 3px solid var(--accent);
+}
+
+.download-trace {
+  border-left: 3px solid var(--primary);
+}
+
+.download-trace-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+}
+
+.trace-step > summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 9px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.trace-step > summary::-webkit-details-marker {
+  display: none;
+}
+
+.trace-icon {
+  font-size: 12px;
+  color: var(--text-3);
+  flex-shrink: 0;
+}
+
+.trace-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.trace-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.trace-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 10px;
+}
+
+.trace-code {
+  margin: 0;
+  overflow-x: auto;
+  background: var(--surface-2);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.trace-code code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+}
+
+.trace-step.trace-text {
+  border: none;
+  background: var(--surface-2);
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.trace-step.trace-plan {
+  border-left: 3px solid var(--warn);
+}
+
+.trace-step.pending > summary::after {
+  content: "";
+  margin-left: auto;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--primary-soft);
+  border-top-color: var(--primary);
+  animation: trace-spin 0.8s linear infinite;
+}
+
+.trace-input-required {
+  margin-left: auto;
+  color: var(--warn);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+@keyframes trace-spin {
+  to { transform: rotate(360deg); }
+}
+
+.trace-io-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 2px 0 4px;
+}
+
+.trace-io-label:not(:first-child) {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.plan-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--surface-3);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.plan-progress-fill {
+  height: 100%;
+  background: var(--success);
+  transition: width 0.2s ease;
+}
+
+.plan-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.plan-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.plan-item-icon {
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  font-size: 11px;
+}
+
+.plan-item.plan-completed .plan-item-icon { color: var(--success); }
+.plan-item.plan-completed .plan-item-text { color: var(--text-3); text-decoration: line-through; }
+.plan-item.plan-in_progress .plan-item-icon { color: var(--warn); }
+.plan-item.plan-in_progress .plan-item-text { color: var(--text); font-weight: 600; }
+.plan-item.plan-cancelled .plan-item-icon { color: var(--text-3); }
+.plan-item.plan-cancelled .plan-item-text { color: var(--text-3); text-decoration: line-through; }
+.plan-item.plan-blocked .plan-item-icon { color: var(--error); }
+.plan-item.plan-blocked .plan-item-text { color: var(--text); }

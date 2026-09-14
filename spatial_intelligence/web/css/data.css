@@ -1,0 +1,132 @@
+/* spatial_intelligence — Data tab: import rows, headings, file tree. */
+
+/* -- data tab ------------------------------------------------------------- */
+
+.import-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.import-row input[type="text"],
+.import-row input[type="url"] {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+}
+
+.import-row input:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.import-row button {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--primary);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.import-row button:hover {
+  background: var(--primary-hover);
+}
+
+.data-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 10px;
+}
+
+.data-heading-label {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.data-refresh {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-2);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+
+.data-refresh:hover {
+  background: var(--surface-3);
+  color: var(--primary);
+}
+
+.file-tree {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.file-tree .file-tree {
+  padding-left: 16px;
+}
+
+.tree-dir > details > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+  list-style: none;
+  border-radius: var(--radius-sm);
+}
+
+.tree-dir > details > summary:hover {
+  background: var(--surface-2);
+}
+
+.tree-dir > details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tree-dir > details > summary::before {
+  content: "▸";
+  font-size: 10px;
+  color: var(--text-3);
+  width: 12px;
+  transition: transform 120ms ease;
+}
+
+.tree-dir > details[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.tree-name {
+  font-family: var(--font-mono);
+  color: var(--text-2);
+  word-break: break-all;
+}
+
+.tree-dir > details > summary .tree-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tree-file {
+  padding: 4px 6px 4px 18px;
+}
+
+.tree-file .tree-name {
+  color: var(--text-2);
+}
