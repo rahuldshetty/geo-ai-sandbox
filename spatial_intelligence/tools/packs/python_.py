@@ -26,7 +26,7 @@ class PythonPack:
             lambda: PythonExecutor(runtime.workspace, approved=runtime.approved),
         )
 
-    @tool(effects=frozenset({Effect.WORKSPACE_WRITE, Effect.PROCESS, Effect.NETWORK}))
+    @tool(core=True, effects=frozenset({Effect.WORKSPACE_WRITE, Effect.PROCESS, Effect.NETWORK}))
     def run_python(self, code: str) -> str:
         """Run a snippet of Python for math/processing and capture its output.
 

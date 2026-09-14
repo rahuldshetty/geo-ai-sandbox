@@ -28,6 +28,7 @@ class FilesPack:
         return fileops.find_files(self._rt.workspace, pattern)
 
     @tool(
+        core=True,
         summary="Read a text file, or a byte slice of a large one",
         effects=frozenset({Effect.READ}),
     )
@@ -54,7 +55,7 @@ class FilesPack:
             limit=limit,
         )
 
-    @tool(effects=frozenset({Effect.WORKSPACE_WRITE}))
+    @tool(core=True, effects=frozenset({Effect.WORKSPACE_WRITE}))
     def write_file(self, path: str, content: str) -> str:
         """Write UTF-8 text to a workspace file; returns the absolute path."""
         out = fileops.write_text(self._rt.workspace, path, content)

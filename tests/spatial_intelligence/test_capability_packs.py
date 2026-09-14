@@ -10,12 +10,13 @@ import unittest
 from pathlib import Path
 
 from pydantic import ValidationError
-from pydantic_ai import CallDeferred
+from pydantic_ai import CallDeferred, ToolReturn
 
 from spatial_intelligence import discovery
 from spatial_intelligence.contracts.effects import Effect
 from spatial_intelligence.tools import ToolKind, ToolRegistry, ToolRuntime
 from spatial_intelligence.tools.packs.capabilities import CapabilityPack
+from spatial_intelligence.tools.packs.files import FilesPack
 from spatial_intelligence.tools.packs.interaction import (
     ChoiceOption,
     InteractionField,
@@ -82,6 +83,12 @@ class CapabilityCatalogTests(unittest.TestCase):
         )
         self.assertTrue(all(entry["summary"] is None for entry in files["tools"]))
 
+    def test_python_execution_ranks_for_code_goals(self):
+        found = discovery.discover(None, "execute Python code")
+
+        self.assertEqual(found[0]["id"], "python.execution")
+        self.assertIn("run_python", [entry["name"] for entry in found[0]["tools"]])
+
     def test_interactive_handoffs_carry_prose_the_agent_can_relay(self):
         found = discovery.discover(None, "compare before after terrain overture planet", limit=8)
 
@@ -124,7 +131,7 @@ class CapabilityPackTests(PackTestCase):
         )
         registry = self.pack_registry(CapabilityPack, session)
 
-        found = registry.get("discover_capabilities").callable("workspace file data import")
+        found = registry.get("discover_capabilities").callable("workspace file data import").return_value
 
         files = files_capability(found)
         self.assertEqual(
@@ -134,10 +141,46 @@ class CapabilityPackTests(PackTestCase):
     def test_discovery_still_ranks_before_the_session_wires_a_registry(self):
         registry = self.pack_registry(CapabilityPack)
 
-        found = registry.get("discover_capabilities").callable("flood imagery download")
+        found = registry.get("discover_capabilities").callable("flood imagery download").return_value
 
         self.assertEqual(found[0]["id"], "catalog.disaster-imagery")
         self.assertTrue(all(entry["summary"] is None for entry in found[0]["tools"]))
+
+    def test_discovery_reveals_the_tools_it_lists(self):
+        registry = self.pack_registry(CapabilityPack)
+
+        result = registry.get("discover_capabilities").callable("execute Python code")
+
+        self.assertIsInstance(result, ToolReturn)
+        self.assertEqual(result.return_value[0]["id"], "python.execution")
+        self.assertIn("run_python", result.tools)
+
+    def test_describe_tool_returns_usage_and_parameters(self):
+        session = ToolRegistry()
+        session.add_pack(FilesPack, self.runtime())
+        registry = self.pack_registry(CapabilityPack, session)
+
+        result = registry.get("describe_tool").callable("read_file")
+
+        self.assertIsInstance(result, ToolReturn)
+        info = result.return_value
+        self.assertEqual(info["name"], "read_file")
+        self.assertEqual(info["category"], "files")
+        self.assertIn("Read a UTF-8 text file", info["description"])
+        self.assertEqual(
+            [param["name"] for param in info["parameters"]],
+            ["path", "max_bytes", "offset", "limit"],
+        )
+        self.assertEqual(result.tools, ["read_file"])
+
+    def test_describe_tool_without_a_name_lists_the_registry(self):
+        session = ToolRegistry()
+        session.add_external("list_files", category="files", origin="test", summary="List files.")
+        registry = self.pack_registry(CapabilityPack, session)
+
+        result = registry.get("describe_tool").callable()
+
+        self.assertEqual(result["tools"][0]["name"], "list_files")
 
     def test_both_tools_are_core_and_read_only(self):
         registry = ToolRegistry()
@@ -146,7 +189,8 @@ class CapabilityPackTests(PackTestCase):
         registry.add_pack(InteractionPack, runtime)
 
         self.assertEqual(
-            registry.core_names(), frozenset({"discover_capabilities", "request_user_input"})
+            registry.core_names(),
+            frozenset({"discover_capabilities", "describe_tool", "request_user_input"}),
         )
         self.assertEqual(registry.get("discover_capabilities").effects, frozenset({Effect.READ}))
         self.assertEqual(registry.get("discover_capabilities").kind, ToolKind.SYNC)

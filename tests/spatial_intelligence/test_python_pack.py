@@ -380,7 +380,7 @@ class PythonPackTests(PythonTestCase):
         self.assertTrue(registry.replay_safe("inspect_output"))
         self.assertTrue(registry.replay_safe("query_output"))
         self.assertTrue(registry.replay_safe("python_help"))
-        self.assertEqual(registry.core_names(), frozenset())
+        self.assertEqual(registry.core_names(), frozenset({"run_python"}))
         self.assertFalse(registry.requires_approval("run_python"))
 
     def test_run_python_returns_a_preview_the_session_can_page(self):

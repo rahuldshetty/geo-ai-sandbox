@@ -28,15 +28,19 @@ EXPECTED_CORE = frozenset(
     {
         "describe_geolibre_bridge",
         "describe_map",
+        "describe_tool",
         "discover_capabilities",
         "find_files",
         "list_files",
+        "read_file",
         "request_user_input",
+        "run_python",
+        "write_file",
     }
 )
 
 EXPECTED_CATEGORY_COUNTS = {
-    "capability": 1,
+    "capability": 2,
     "catalog": 5,
     "files": 6,
     "interaction": 1,
@@ -64,7 +68,7 @@ class ManifestTestCase(unittest.TestCase):
 
 class ManifestTests(ManifestTestCase):
     def test_every_tool_is_registered_with_a_category(self):
-        self.assertEqual(len(self.registry), 61)
+        self.assertEqual(len(self.registry), 62)
         counted = {
             category: len(names)
             for category, names in self.registry.categories().items()
@@ -108,7 +112,7 @@ class ManifestTests(ManifestTestCase):
 
     def test_implemented_tools_exclude_foreign_ones(self):
         implemented = {spec.name for spec in self.registry.implemented()}
-        self.assertEqual(len(implemented), 54)
+        self.assertEqual(len(implemented), 55)
         self.assertNotIn(TOOL_SEARCH_NAME, implemented)
         for name in PLAN_TOOL_NAMES:
             self.assertNotIn(name, implemented)

@@ -348,7 +348,9 @@ class FilesPackTests(FilesTestCase):
             sorted(registry.names()),
             ["download", "download_files", "find_files", "list_files", "read_file", "write_file"],
         )
-        self.assertEqual(registry.core_names(), frozenset({"list_files", "find_files"}))
+        self.assertEqual(
+            registry.core_names(), frozenset({"list_files", "find_files", "read_file", "write_file"})
+        )
         self.assertTrue(registry.replay_safe("read_file"))
         self.assertFalse(registry.replay_safe("download"))
         self.assertEqual(registry.get("download").kind.value, "reporting")

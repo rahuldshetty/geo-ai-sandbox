@@ -62,6 +62,17 @@ CAPABILITIES: tuple[Capability, ...] = (
         tools=("read_vector", "reproject_vector", "buffer", "clip_vector", "to_geojson"),
     ),
     Capability(
+        id="python.execution",
+        title="Python sandbox",
+        summary="Run Python snippets for data processing (pandas, geopandas, rasterio, …) and page the output.",
+        keywords=(
+            "python", "code", "execute", "run", "script", "sandbox", "compute",
+            "calculate", "process", "analyze", "pandas", "geopandas", "numpy",
+        ),
+        implementation="backend",
+        tools=("run_python", "inspect_output", "query_output", "python_help"),
+    ),
+    Capability(
         id="catalog.disaster-imagery",
         title="Open disaster imagery",
         summary="Search, download into data/, and map Vantor and OpenAerialMap disaster imagery.",
