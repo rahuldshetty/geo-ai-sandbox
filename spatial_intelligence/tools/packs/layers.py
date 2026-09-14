@@ -9,10 +9,21 @@ from __future__ import annotations
 from typing import Any
 
 from ...contracts.effects import Effect
+from ...contracts.errors import ToolInputError
 from ...map import bridge
 from ...map import layers as layerops
 from ..runtime import ToolRuntime
 from ..spec import pack, tool
+
+
+def _source(data: str | None, path: str | None) -> str:
+    """Return the layer source from ``data`` or its synonym ``path``."""
+    if data is not None and path is not None:
+        raise ToolInputError("pass either data= or path=, not both")
+    source = data if data is not None else path
+    if not source:
+        raise ToolInputError("data (or path) is required")
+    return source
 
 
 @pack(category="layers", effects=frozenset({Effect.MAP_WRITE}))
@@ -35,7 +46,12 @@ class LayersPack:
 
     @tool(core=True, effects=frozenset({Effect.READ}))
     def describe_map(self) -> dict:
-        """Return a compact summary of the current map (layers, view, basemap)."""
+        """Return a compact summary of the current map (layers, view, basemap).
+
+        Every layer entry carries ``style``: the style GeoLibre renders for it
+        (fill, stroke, marker radius, and the label object), so a styling call
+        can be checked here instead of assumed.
+        """
         return layerops.describe(self._map)
 
     @tool(core=True, effects=frozenset({Effect.READ}))
@@ -58,17 +74,35 @@ class LayersPack:
         """
         return layerops.list_colormaps()
 
+    @tool(effects=frozenset({Effect.READ}))
+    def list_style_keys(self) -> dict:
+        """Return the style vocabulary ``style_layer`` and the add tools accept.
+
+        ``style`` lists layer style keys, ``labels`` the keys of the nested text
+        label object, and ``aliases`` the foreign names translated for you.
+        GeoLibre ignores style keys it does not know, so ``style_layer`` rejects
+        them; call this instead of guessing.
+        """
+        return layerops.list_style_keys()
+
     # -- layer writes ------------------------------------------------------
 
     @tool()
-    def add_geojson(self, data: str, name: str, style: dict[str, Any] | None = None) -> str:
+    def add_geojson(
+        self,
+        data: str | None = None,
+        name: str = "GeoJSON",
+        style: dict[str, Any] | None = None,
+        path: str | None = None,
+    ) -> str:
         """Add a GeoJSON layer and return its id.
 
-        ``data`` may be a workspace-relative path, an http(s) URL, or a literal
-        GeoJSON string.
+        ``data`` (or its synonym ``path``) may be a workspace-relative path, an
+        http(s) URL, or a literal GeoJSON string. ``style`` is applied like
+        ``style_layer`` does; see ``list_style_keys``.
         """
         layer_id = layerops.add_geojson(
-            self._rt.workspace, self._map, data, name, style=style
+            self._rt.workspace, self._map, _source(data, path), name, style=style
         )
         self._mutated()
         return layer_id
@@ -76,19 +110,27 @@ class LayersPack:
     @tool()
     def add_vector(
         self,
-        data: str,
-        name: str,
+        data: str | None = None,
+        name: str = "Vector",
         data_format: str | None = None,
         source_layer: str | None = None,
+        style: dict[str, Any] | None = None,
+        path: str | None = None,
     ) -> str:
-        """Add a vector layer from a path/URL and return its id."""
+        """Add a vector layer from a path/URL and return its id.
+
+        ``data`` (or its synonym ``path``) is a workspace-relative path or an
+        http(s) URL. ``style`` is applied like ``style_layer`` does; see
+        ``list_style_keys``.
+        """
         layer_id = layerops.add_vector(
             self._rt.workspace,
             self._map,
-            data,
+            _source(data, path),
             name,
             data_format=data_format,
             source_layer=source_layer,
+            style=style,
         )
         self._mutated()
         return layer_id
@@ -166,7 +208,20 @@ class LayersPack:
 
     @tool()
     def style_layer(self, layer: str, style: dict[str, Any]) -> dict:
-        """Merge style overrides onto a layer (e.g. ``{"fillColor": "#ff0000"}``)."""
+        """Merge style overrides onto a layer (e.g. ``{"fillColor": "#ff0000"}``).
+
+        ``layer`` is a layer id or display name. ``style`` uses GeoLibre's style
+        keys, including the nested text label object::
+
+            {"fillColor": "#ff8c00", "fillOpacity": 0.85,
+             "labels": {"enabled": true, "field": "pop_fmt", "size": 13}}
+
+        Label text needs ``labels.enabled`` and a ``field`` naming a feature
+        property. A point layer draws circle markers unless told otherwise, so a
+        text-only label layer also sets ``{"circleRadius": 0}``. Keys GeoLibre
+        does not know are rejected, so call ``list_style_keys`` rather than
+        guessing; the result echoes the layer's complete rendered style.
+        """
         result = layerops.style_layer(self._rt.workspace, self._map, layer, style)
         self._mutated()
         return result
@@ -183,7 +238,8 @@ class LayersPack:
         """Symbolize a GeoJSON layer as a choropleth on a numeric ``column``.
 
         ``method`` is ``"quantile"`` or ``"equal-interval"``; ``k`` is the class
-        count; ``palette`` is a color-ramp name.
+        count; ``palette`` is a color-ramp name (see ``list_colormaps``). The
+        result echoes the layer's complete rendered style.
         """
         result = layerops.classify_layer(
             self._rt.workspace, self._map, layer, column, palette, method, k

@@ -23,6 +23,7 @@ from geolibre import authoring as geolibre_authoring
 
 from ..contracts.errors import ToolInputError
 from ..workspace import Workspace, WorkspaceError
+from . import styles
 from .document import persist_map
 
 #: Layer metadata key holding the workspace-relative path of a local source.
@@ -45,6 +46,7 @@ __all__ = [
     "fit_bounds",
     "layers",
     "list_colormaps",
+    "list_style_keys",
     "remove_layer",
     "repoint_local_rasters",
     "save_map",
@@ -81,8 +83,29 @@ def set_layer_metadata(map_obj: Map, layer_id: str, key: str, value: Any) -> Non
 
 
 def describe(map_obj: Map) -> dict:
-    """Return a compact summary of the current map (layers, view, basemap)."""
-    return map_obj.describe()
+    """Return a compact summary of the current map (layers, view, basemap).
+
+    Each layer summary carries ``style``: the style GeoLibre renders for it,
+    so a caller can confirm a styling call instead of assuming it landed.
+    """
+    summary = map_obj.describe()
+    records = {str(layer.get("id")): layer for layer in layers(map_obj)}
+    for entry in summary.get("layers", []):
+        record = records.get(str(entry.get("id")))
+        if record is not None:
+            entry["style"] = styles.summary(map_obj.project, record)
+    return summary
+
+
+def list_style_keys() -> dict:
+    """Return the style vocabulary ``style_layer`` accepts.
+
+    ``style`` lists the layer style keys, ``labels`` the keys of the nested
+    text-label object, and ``aliases`` the foreign names translated for you.
+    Call this instead of guessing a key: GeoLibre ignores keys it does not
+    know, and ``style_layer`` rejects them for that reason.
+    """
+    return styles.style_keys()
 
 
 def list_colormaps() -> dict[str, list[str]]:
@@ -198,11 +221,14 @@ def add_geojson(
     """Add a GeoJSON layer and return its id.
 
     ``data`` may be a workspace-relative path, an http(s) URL, or a literal
-    GeoJSON string.
+    GeoJSON string. ``style`` is applied through the same path as
+    :func:`style_layer` (see there for the accepted keys).
     """
     if not _is_url(data) and not _is_geojson_literal(data):
         data = str(workspace.resolve(data, must_exist=True))
-    layer_id = map_obj.add_geojson(data, name, **(style or {}))
+    layer_id = map_obj.add_geojson(data, name)
+    if style:
+        styles.apply_style(map_obj.project, layer_id, style)
     persist_map(map_obj, workspace)
     return layer_id
 
@@ -215,13 +241,19 @@ def add_vector(
     *,
     data_format: str | None = None,
     source_layer: str | None = None,
+    style: dict[str, Any] | None = None,
 ) -> str:
-    """Add a vector layer from a path/URL and return its id."""
+    """Add a vector layer from a path/URL and return its id.
+
+    ``style`` is applied through the same path as :func:`style_layer`.
+    """
     if not _is_url(data):
         data = str(workspace.resolve(data, must_exist=True))
     layer_id = map_obj.add_vector(
         data, name, data_format=data_format, source_layer=source_layer
     )
+    if style:
+        styles.apply_style(map_obj.project, layer_id, style)
     persist_map(map_obj, workspace)
     return layer_id
 
@@ -307,13 +339,34 @@ def set_basemap(workspace: Workspace, map_obj: Map, basemap: str) -> dict:
 def style_layer(
     workspace: Workspace, map_obj: Map, layer: str, style: dict[str, Any]
 ) -> dict:
-    """Merge style overrides onto a layer (e.g. ``{"fillColor": "#ff0000"}``)."""
-    handle = map_obj.find_layer(layer)
-    if handle is None:
-        raise ToolInputError(f"layer not found: {layer!r}")
-    handle.set_style(**style)
+    """Merge style overrides onto a layer (e.g. ``{"fillColor": "#ff0000"}``).
+
+    ``layer`` is a layer id or display name. ``style`` uses GeoLibre's own
+    style keys -- ``fillColor``, ``strokeColor``, ``strokeWidth``,
+    ``fillOpacity``, ``circleRadius``, ... -- plus the nested text-label object::
+
+        {"labels": {"enabled": true, "field": "pop_fmt", "size": 13}}
+
+    Label text needs both ``labels.enabled`` and a ``field`` naming a feature
+    property. A point layer draws circle markers unless told otherwise, so a
+    text-only label layer also sets ``{"circleRadius": 0}``.
+
+    A few foreign names are translated (``textField`` -> ``labels.field``,
+    ``color`` -> ``strokeColor``); every other unknown key is rejected rather
+    than accepted as the silent no-op GeoLibre makes of it. Call
+    :func:`list_style_keys` for the full vocabulary.
+
+    The result carries the layer's complete, rendered style, so the caller can
+    read back what the map will draw.
+    """
+    target, merged = styles.apply_style(map_obj.project, layer, style)
     persist_map(map_obj, workspace)
-    return {"status": "applied", "layer": layer, "style": style}
+    return {
+        "status": "applied",
+        "layer": target.get("name"),
+        "layerId": target.get("id"),
+        "style": merged,
+    }
 
 
 def classify_layer(
@@ -330,19 +383,29 @@ def classify_layer(
     ``method`` is ``"quantile"`` or ``"equal-interval"``; ``k`` is the class
     count; ``palette`` is a color-ramp name.
     """
-    project = map_obj.to_project()
-    geolibre_authoring.classify_layer(
-        project, layer, column, class_count=k, colormap=palette, scheme=method
-    )
-    map_obj.load_project(project)
+    project = map_obj.project
+    target = styles.resolve(project, layer)
+    try:
+        fragment = geolibre_authoring.build_choropleth_style(
+            geolibre_authoring.column_values(target, column),
+            column,
+            class_count=k,
+            colormap=palette,
+            scheme=method,
+        )
+    except ValueError as exc:
+        raise ToolInputError(str(exc)) from exc
+    _, merged = styles.apply_style(project, target["id"], fragment)
     persist_map(map_obj, workspace)
     return {
         "status": "applied",
-        "layer": layer,
+        "layer": target.get("name"),
+        "layerId": target.get("id"),
         "column": column,
         "palette": palette,
         "method": method,
         "classes": k,
+        "style": merged,
     }
 
 

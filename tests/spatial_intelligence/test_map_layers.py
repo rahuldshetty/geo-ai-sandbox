@@ -36,6 +36,10 @@ def url_for(rel: str) -> str:
     return f"{BASE_URL}/api/files/{rel}"
 
 
+def layer_with(project: dict, layer_id: str) -> dict:
+    return next(layer for layer in project["layers"] if layer["id"] == layer_id)
+
+
 class MapTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -58,6 +62,12 @@ class MapTestCase(unittest.TestCase):
     def reload_map(self):
         """A fresh map restored from the workspace snapshot."""
         return document.create_map(self.workspace)
+
+    def snapshot_project(self) -> dict:
+        """The persisted project, as any other GeoLibre client would read it."""
+        return json.loads(
+            document.snapshot_path(self.workspace).read_text(encoding="utf-8")
+        )
 
 
 class MapDocumentTests(MapTestCase):
@@ -245,6 +255,194 @@ class MapLayerServiceTests(MapTestCase):
         with self.assertRaises(ToolInputError):
             layerops.style_layer(self.workspace, self.map, "nope", {"fillColor": "#fff"})
 
+    def test_style_layer_resolves_a_layer_by_the_id_it_returned(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        result = layerops.style_layer(
+            self.workspace, self.map, layer_id, {"fillColor": "#FF8C00"}
+        )
+
+        self.assertEqual(result["layerId"], layer_id)
+        self.assertEqual(result["layer"], "Points")
+        self.assertEqual(result["style"]["fillColor"], "#FF8C00")
+
+    def test_style_layer_writes_both_copies_the_app_resolves(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        layerops.style_layer(
+            self.workspace, self.map, "Points", {"fillColor": "#FF8C00", "fillOpacity": 0.85}
+        )
+
+        for project in (self.map.project, self.snapshot_project()):
+            layer = layer_with(project, layer_id)
+            self.assertEqual(layer["style"]["fillColor"], "#FF8C00")
+            self.assertEqual(layer["style"]["fillOpacity"], 0.85)
+            # The app resolves defaults < layer.style < styles[id]; both copies
+            # must agree or the stale one silently wins.
+            self.assertEqual(project["styles"][layer_id]["fillColor"], "#FF8C00")
+            self.assertEqual(project["styles"][layer_id]["fillOpacity"], 0.85)
+
+    def test_style_layer_overrides_a_stale_project_level_copy(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+        # What the app writes back for a layer it has already round-tripped.
+        self.map.project["styles"][layer_id] = {"fillColor": "#3b82f6"}
+
+        layerops.style_layer(
+            self.workspace, self.map, layer_id, {"fillColor": "#FF8C00"}
+        )
+
+        self.assertEqual(layer_with(self.map.project, layer_id)["style"]["fillColor"], "#FF8C00")
+        self.assertEqual(self.map.project["styles"][layer_id]["fillColor"], "#FF8C00")
+        self.assertEqual(
+            layer_with(self.snapshot_project(), layer_id)["style"]["fillColor"], "#FF8C00"
+        )
+
+    def test_style_layer_translates_text_keys_into_the_labels_object(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        result = layerops.style_layer(
+            self.workspace, self.map, layer_id, {"textField": "name", "textSize": 18}
+        )
+
+        labels = result["style"]["labels"]
+        self.assertTrue(labels["enabled"])
+        self.assertEqual(labels["field"], "name")
+        self.assertEqual(labels["size"], 18)
+        # A partial request still writes the whole object the app expects.
+        self.assertEqual(labels["haloColor"], "#ffffff")
+        self.assertNotIn("textField", result["style"])
+        self.assertEqual(
+            self.snapshot_project()["styles"][layer_id]["labels"]["field"], "name"
+        )
+
+    def test_style_layer_keeps_labels_off_when_the_request_says_so(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        result = layerops.style_layer(
+            self.workspace, self.map, layer_id, {"labels": {"enabled": False, "field": "name"}}
+        )
+
+        self.assertFalse(result["style"]["labels"]["enabled"])
+
+    def test_style_layer_rejects_keys_the_app_would_ignore(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        with self.assertRaises(ToolInputError) as caught:
+            layerops.style_layer(self.workspace, self.map, layer_id, {"fillColour": "#fff"})
+
+        self.assertIn("list_style_keys", str(caught.exception))
+        self.assertNotIn("fillColour", layerops.find_layer(self.map, layer_id)["style"])
+        self.assertNotIn(layer_id, self.map.project.get("styles", {}))
+
+    def test_style_layer_rejects_an_unknown_label_key(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        with self.assertRaises(ToolInputError):
+            layerops.style_layer(
+                self.workspace, self.map, layer_id, {"labels": {"enabled": True, "feild": "name"}}
+            )
+
+    def test_describe_reports_the_style_the_app_resolves(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+        layerops.style_layer(
+            self.workspace, self.map, layer_id, {"textField": "name", "fillColor": "#FF8C00"}
+        )
+
+        styled = layerops.describe(self.map)["layers"][0]["style"]
+
+        self.assertEqual(styled["fillColor"], "#FF8C00")
+        self.assertEqual(styled["labels"]["field"], "name")
+        self.assertTrue(styled["labels"]["enabled"])
+        # A project-level copy outranks the layer's own style, exactly as in the app.
+        self.map.project["styles"][layer_id] = {"fillColor": "#111111"}
+        self.assertEqual(
+            layerops.describe(self.map)["layers"][0]["style"]["fillColor"], "#111111"
+        )
+
+    def test_classify_layer_writes_both_copies_the_app_resolves(self):
+        self.write(
+            "data/pops.geojson",
+            json.dumps(
+                {
+                    "type": "FeatureCollection",
+                    "features": [
+                        {
+                            "type": "Feature",
+                            "properties": {"name": name, "value": value},
+                            "geometry": {"type": "Point", "coordinates": [7.0, 45.0]},
+                        }
+                        for name, value in (("a", 1), ("b", 5), ("c", 9))
+                    ],
+                }
+            ),
+        )
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/pops.geojson", "Pops"
+        )
+
+        result = layerops.classify_layer(
+            self.workspace, self.map, layer_id, "value", method="equal-interval", k=3
+        )
+
+        self.assertEqual(result["style"]["vectorStyleMode"], "graduated")
+        self.assertEqual(len(result["style"]["vectorStyleStops"]), 3)
+        for project in (self.map.project, self.snapshot_project()):
+            self.assertEqual(
+                project["styles"][layer_id]["vectorStyleMode"], "graduated"
+            )
+            self.assertEqual(
+                layer_with(project, layer_id)["style"]["vectorStyleMode"], "graduated"
+            )
+
+    def test_classify_layer_reports_a_missing_column_as_an_input_error(self):
+        self.geojson_file("data/points.geojson")
+        layer_id = layerops.add_geojson(
+            self.workspace, self.map, "data/points.geojson", "Points"
+        )
+
+        with self.assertRaises(ToolInputError):
+            layerops.classify_layer(self.workspace, self.map, layer_id, "nope")
+
+    def test_add_geojson_applies_a_style_at_add_time(self):
+        self.geojson_file("data/points.geojson")
+
+        layer_id = layerops.add_geojson(
+            self.workspace,
+            self.map,
+            "data/points.geojson",
+            "Points",
+            style={"textField": "name"},
+        )
+
+        self.assertEqual(self.map.project["styles"][layer_id]["labels"]["field"], "name")
+        self.assertTrue(
+            layerops.find_layer(self.map, layer_id)["style"]["labels"]["enabled"]
+        )
+
     def test_clear_layers_empties_the_persisted_snapshot(self):
         self.geojson_file("data/points.geojson")
         layerops.add_geojson(self.workspace, self.map, "data/points.geojson", "Points")
@@ -282,6 +480,7 @@ class LayersPackTests(MapTestCase):
             "describe_map": frozenset({Effect.READ}),
             "describe_geolibre_bridge": frozenset({Effect.READ}),
             "list_colormaps": frozenset({Effect.READ}),
+            "list_style_keys": frozenset({Effect.READ}),
             "add_geojson": frozenset({Effect.MAP_WRITE}),
             "add_vector": frozenset({Effect.MAP_WRITE}),
             "add_raster": frozenset({Effect.MAP_WRITE}),
@@ -330,12 +529,53 @@ class LayersPackTests(MapTestCase):
         summary = registry.get("describe_map").callable()
         bridge = registry.get("describe_geolibre_bridge").callable()
         ramps = registry.get("list_colormaps").callable()
+        keys = registry.get("list_style_keys").callable()
 
         self.assertEqual(summary["layerCount"], 0)
         self.assertFalse(bridge["connected"])
         self.assertIn("viridis", ramps)
+        self.assertIn("fillColor", keys["style"])
+        self.assertIn("field", keys["labels"])
+        self.assertEqual(keys["aliases"]["textField"], "labels.field")
         self.assertEqual(map_notifications, [])
         self.assertEqual(file_notifications, [])
+
+    def test_add_geojson_accepts_path_as_a_synonym_for_data(self):
+        registry = self.build_pack([], [])
+        self.geojson_file("data/points.geojson")
+
+        layer_id = registry.get("add_geojson").callable(
+            name="Points", path="data/points.geojson", style={"textField": "name"}
+        )
+
+        self.assertEqual(layerops.find_layer(self.map, layer_id)["name"], "Points")
+        self.assertTrue(
+            layerops.find_layer(self.map, layer_id)["style"]["labels"]["enabled"]
+        )
+
+    def test_add_geojson_rejects_an_ambiguous_or_missing_source(self):
+        registry = self.build_pack([], [])
+        self.geojson_file("data/points.geojson")
+        tool = registry.get("add_geojson")
+
+        with self.assertRaises(ToolInputError):
+            tool.callable("data/points.geojson", "Points", None, "data/points.geojson")
+        with self.assertRaises(ToolInputError):
+            tool.callable(name="Points")
+
+    def test_style_layer_through_the_pack_persists_both_copies(self):
+        registry = self.build_pack([], [])
+        self.geojson_file("data/points.geojson")
+        layer_id = registry.get("add_geojson").callable("data/points.geojson", "Points")
+
+        registry.get("style_layer").callable(layer_id, {"fillColor": "#FF8C00"})
+
+        self.assertEqual(
+            layer_with(self.snapshot_project(), layer_id)["style"]["fillColor"], "#FF8C00"
+        )
+        self.assertEqual(
+            self.snapshot_project()["styles"][layer_id]["fillColor"], "#FF8C00"
+        )
 
     def test_describe_map_reports_a_layer_added_through_the_pack(self):
         registry = self.build_pack([], [])

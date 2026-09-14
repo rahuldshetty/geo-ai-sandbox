@@ -40,7 +40,7 @@ EXPECTED_CATEGORY_COUNTS = {
     "catalog": 5,
     "files": 6,
     "interaction": 1,
-    "layers": 21,
+    "layers": 22,
     "plan": 6,
     "python": 4,
     "raster": 9,
@@ -64,7 +64,7 @@ class ManifestTestCase(unittest.TestCase):
 
 class ManifestTests(ManifestTestCase):
     def test_every_tool_is_registered_with_a_category(self):
-        self.assertEqual(len(self.registry), 60)
+        self.assertEqual(len(self.registry), 61)
         counted = {
             category: len(names)
             for category, names in self.registry.categories().items()
@@ -108,7 +108,7 @@ class ManifestTests(ManifestTestCase):
 
     def test_implemented_tools_exclude_foreign_ones(self):
         implemented = {spec.name for spec in self.registry.implemented()}
-        self.assertEqual(len(implemented), 53)
+        self.assertEqual(len(implemented), 54)
         self.assertNotIn(TOOL_SEARCH_NAME, implemented)
         for name in PLAN_TOOL_NAMES:
             self.assertNotIn(name, implemented)

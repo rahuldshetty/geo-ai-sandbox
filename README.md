@@ -126,7 +126,7 @@ spatial_intelligence/
   contracts/      types shared by every layer: effects, progress jobs, errors
   settings/       data root, .env, model resolution, persisted settings
   workspace/      the workspace tree, notebook document, run traces, file I/O
-  map/            the live GeoLibre document, snapshots, the iframe bridge
+  map/            the live GeoLibre document, snapshots, the style model, the iframe bridge
   geo/            rasterio and GeoPandas services, open-data catalog clients
   pythonruntime/  the run_python sandbox, output store, and API help
   tools/          the tool registry (@tool/@pack), the runtime, and the packs
@@ -151,6 +151,12 @@ Rules the layers keep:
   `rt.record_artifact(path)`; the session turns both into browser events.
 - **Layering**: contracts ← services ← tools ← agent ← session ← server, with
   `web/` talking only HTTP and SSE. Imports point one way.
+- **A layer style lives in two places.** GeoLibre resolves a layer as
+  `defaults < layer.style < project.styles[layerId]`, and its app re-materialises
+  the project-level copy on every save — so a writer that touches only
+  `layer.style` is silently outranked. `map/styles.py` owns every style write:
+  it translates foreign key names, rejects keys the app would ignore, and keeps
+  both copies in sync.
 
 ## Workspace layout
 

@@ -59,7 +59,8 @@ Rules:
    convert with to_cog, then add_raster(results/<name>.tif). Colormap "gray" for
    radar/SAR, "terrain" for elevation.
 6. Vector data: read_vector, process, write results/*.geojson, then
-   add_geojson or add_vector_to_map.
+   add_geojson or add_vector_to_map. Both take an optional `style`, style_layer
+   restyles a layer afterwards, and list_style_keys names every accepted key.
 7. Sentinel-1 GRD (.SAFE): the imagery is <safe>/measurement/*-vv.tiff and
    *-vh.tiff. Use find_files to locate them, raster_info to inspect, rescale
    (percentile stretch) + to_cog, then add_raster. The annotation/*.xml files
