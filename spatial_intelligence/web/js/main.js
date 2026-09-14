@@ -7,7 +7,7 @@ import { closeAllMenus } from "./components/menubar.js";
 import { revealInteraction } from "./components/interaction.js";
 import { updateJobNode } from "./components/progress.js";
 import { refreshStatusBar } from "./components/status-bar.js";
-import { applyTrace, flushPendingTrace } from "./components/trace.js";
+import { applyTrace, flushPendingTrace, repaintTrace } from "./components/trace.js";
 import { connectEvents } from "./events.js";
 import { renderCellsOnly } from "./pages/cells.js";
 import { renderDataOnly } from "./pages/data.js";
@@ -25,6 +25,7 @@ export function boot() {
     onCell: handleCell,
     onTrace: handleTrace,
     onJob: handleJob,
+    onJobs: handleJobs,
     onMap: handleMap,
     onFiles: handleFiles,
     onSettings: handleSettings,
@@ -69,11 +70,22 @@ function handleJob(event) {
   const job = upsertJob(event);
   if (!job) return;
   const node = document.querySelector('[data-job-id="' + job.job_id + '"]');
-  if (!node) {
-    renderCellsOnly();
+  if (node) {
+    updateJobNode(node, job);
     return;
   }
-  updateJobNode(node, job);
+  // A job the trace does not show yet: repaint the strip it belongs to, so its
+  // card lands at the step that opened it instead of at the end of the trace.
+  const parent = (state.cells || []).find((cell) => cell.id === job.parent_id);
+  if (parent) repaintTrace(parent);
+  else renderCellsOnly();
+}
+
+/** Replace the browser's job list (the session forgets jobs on re-run/delete). */
+function handleJobs(payload) {
+  if (!payload) return;
+  setState({ jobs: payload.jobs || [] });
+  renderCellsOnly();
 }
 
 function handleMap(payload) {

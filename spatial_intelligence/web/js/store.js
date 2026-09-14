@@ -52,16 +52,63 @@ export function setState(patch) {
 
 export function applySnapshot(snapshot) {
   const snap = snapshot || {};
+  const incoming = Array.isArray(snap.cells) ? snap.cells : [];
+  const live = new Map((state.cells || []).map((cell) => [cell.id, cell]));
   return setState({
     active_workspace: snap.active_workspace != null ? snap.active_workspace : null,
     workspaces: snap.workspaces || [],
-    cells: snap.cells || [],
+    cells: incoming.map((cell) => keepStreamedSteps(cell, live.get(cell.id))),
     map_project: snap.map_project != null ? snap.map_project : null,
     map_app_url: snap.map_app_url != null ? snap.map_app_url : null,
     files: snap.files || [],
     jobs: snap.jobs || [],
     settings: snap.settings || state.settings,
   });
+}
+
+/**
+ * The identity of one streamed step, for matching what the browser already has
+ * against a snapshot.
+ */
+export function stepKey(step) {
+  if (!step) return "";
+  if (step.tool_call_id) return step.type + ":" + step.tool_call_id;
+  if (step.type === "plan") return "plan:" + JSON.stringify(step.items || []);
+  if (step.type === "usage") return "usage:" + JSON.stringify(step.usage || null);
+  return (
+    step.type + ":" + (step.name || "") + ":" + String(step.content == null ? "" : step.content)
+  );
+}
+
+/**
+ * Carry over the steps the browser streamed after the snapshot was built.
+ *
+ * A snapshot is built before its response arrives, so a run that kept streaming
+ * during the request has steps in the browser's copy that the snapshot does not
+ * carry yet. They are the tail of the cell's trace: the ones the snapshot does
+ * not already hold, matched by key, are appended to it. Without this a refresh
+ * mid-run silently drops everything streamed while the request was in flight.
+ */
+function keepStreamedSteps(incoming, previous) {
+  if (!incoming || !previous) return incoming;
+  if (previous.status !== "running" || incoming.status !== "running") return incoming;
+  const known = new Map();
+  for (const step of incoming.trace || []) {
+    const key = stepKey(step);
+    known.set(key, (known.get(key) || 0) + 1);
+  }
+  const extra = [];
+  for (const step of previous.trace || []) {
+    const key = stepKey(step);
+    const remaining = known.get(key) || 0;
+    if (remaining > 0) {
+      known.set(key, remaining - 1);
+      continue;
+    }
+    extra.push(step);
+  }
+  if (!extra.length) return incoming;
+  return { ...incoming, trace: [...(incoming.trace || []), ...extra] };
 }
 
 export function isGeneratedCell(cell) {

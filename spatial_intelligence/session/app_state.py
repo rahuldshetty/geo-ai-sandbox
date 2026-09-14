@@ -48,6 +48,7 @@ class AppState:
             settings=lambda: self.settings,
             files_provider=lambda: self.list_files(),
             map_provider=lambda: self.workspaces.project(),
+            trace_length=self._trace_length,
         )
         self._worker: threading.Thread | None = None
         if worker:
@@ -195,12 +196,12 @@ class AppState:
     def run_cell(self, cell_id: str) -> None:
         """Reset a cell and queue it for execution."""
         with self.lock:
-            self.notebook.begin_run(cell_id)
+            # The whole reset cell goes out, not a patch: the browser repaints
+            # this cell from the event, so the previous run's output and trace
+            # cannot survive into the new one.
+            cell = self.notebook.begin_run(cell_id)
             self.jobs.clear_parent(cell_id)
-            self.bus.publish(
-                "cell",
-                {"id": cell_id, "status": "running", "trace": [], "usage": None},
-            )
+            self.bus.publish("cell", cell)
         self.runs.submit(cell_id)
 
     def run_all(self) -> None:
@@ -391,6 +392,11 @@ class AppState:
         )
 
     # -- helpers ---------------------------------------------------------
+
+    def _trace_length(self, cell_id: str) -> int:
+        """How many steps ``cell_id`` has published (where its next job starts)."""
+        cell = self.notebook.find_or_none(cell_id)
+        return len(cell.get("trace") or []) if cell is not None else 0
 
     def _augment_prompt(self, source: str) -> str:
         """Prepend the ``data/`` listing to the current user turn."""

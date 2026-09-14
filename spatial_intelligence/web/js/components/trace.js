@@ -1,9 +1,10 @@
-/* Agent trace: step grouping, full re-render, and incremental append. */
+/* Agent trace: one ordered renderer, plus a live fast path for streamed text. */
 
 import { codeBlock, compactPreview, el, prettyValue } from "../dom.js";
-import { state } from "../store.js";
+import { jobsFor, state, stepKey } from "../store.js";
 import { cellOutputText, renderMarkdown, visibleTraceGroups } from "./markdown.js";
-import { planFromTrace, renderPlan, updatePlan } from "./plan.js";
+import { planFromTrace, renderPlan } from "./plan.js";
+import { renderJob } from "./progress.js";
 import { renderInteraction, reconcilePendingInteraction } from "./interaction.js";
 
 /* Steps published before the snapshot that introduces their cell.
@@ -16,16 +17,6 @@ already hold one like it.
 */
 const pendingTrace = new Map();
 let awaitingSnapshot = true;
-
-function stepKey(step) {
-  if (!step) return "";
-  if (step.tool_call_id) return step.type + ":" + step.tool_call_id;
-  if (step.type === "plan") return "plan:" + JSON.stringify(step.items || []);
-  if (step.type === "usage") return "usage:" + JSON.stringify(step.usage || null);
-  return (
-    step.type + ":" + (step.name || "") + ":" + String(step.content == null ? "" : step.content)
-  );
-}
 
 function isCodeTool(name) {
   return name === "run_python";
@@ -86,6 +77,8 @@ function toolStepNode(group) {
   const isCode = isCodeTool(name);
   const details = el("details", {
     class: "trace-step tool-call" + (result ? "" : " pending"),
+    // A repaint rebuilds this node; the key lets it stay open if it was open.
+    "data-trace-key": "call:" + ((call && call.tool_call_id) || name),
   });
   const summary = el("summary", {});
   summary.append(
@@ -108,21 +101,6 @@ function toolStepNode(group) {
   return details;
 }
 
-function toolResultNode(step) {
-  const details = el("details", { class: "trace-step tool-result" });
-  const summary = el("summary", {});
-  summary.append(
-    el("span", { class: "trace-icon", text: "←" }),
-    el("span", { class: "trace-name", text: step.name || "" }),
-    el("span", { class: "trace-preview", text: compactPreview(step.content) })
-  );
-  details.append(summary);
-  const body = el("div", { class: "trace-body" });
-  body.append(codeBlock(prettyValue(step.content)));
-  details.append(body);
-  return details;
-}
-
 function traceTextNode(content) {
   const node = el("div", { class: "trace-step trace-text markdown" });
   node.dataset.source = content || "";
@@ -130,28 +108,41 @@ function traceTextNode(content) {
   return node;
 }
 
+/**
+ * Group trace steps for display, keeping the trace index each group starts at.
+ *
+ * The index is what places a progress card: a card belongs next to the steps
+ * that were already published when its job opened.
+ */
 export function groupTraceSteps(trace) {
   const groups = [];
   let textBuf = null;
+  let textIndex = 0;
   const flush = () => {
     if (textBuf !== null) {
-      groups.push({ type: "text", content: textBuf });
+      groups.push({ type: "text", content: textBuf, index: textIndex });
       textBuf = null;
     }
   };
   const pending = new Map();
   let fallbackSeq = 0;
 
-  for (const step of trace || []) {
+  const steps = trace || [];
+  for (let index = 0; index < steps.length; index += 1) {
+    const step = steps[index];
     if (step.type === "text") {
       flush();
       textBuf = step.content || "";
+      textIndex = index;
     } else if (step.type === "text_delta") {
-      if (textBuf === null) textBuf = "";
+      if (textBuf === null) {
+        textBuf = "";
+        textIndex = index;
+      }
       textBuf += step.content || "";
     } else if (step.type === "tool_call") {
       flush();
-      const group = { type: "tool", call: step, result: null };
+      const group = { type: "tool", call: step, result: null, index };
       groups.push(group);
       pending.set(step.tool_call_id || "seq:" + fallbackSeq++, group);
     } else if (step.type === "tool_result") {
@@ -170,10 +161,10 @@ export function groupTraceSteps(trace) {
         }
       }
       if (group) group.result = step;
-      else groups.push({ type: "tool", call: null, result: step });
+      else groups.push({ type: "tool", call: null, result: step, index });
     } else if (step.type === "usage") {
       flush();
-      groups.push({ type: "usage", usage: step.usage });
+      groups.push({ type: "usage", usage: step.usage, index });
     } else {
       flush();
     }
@@ -191,13 +182,17 @@ export function renderStepNode(group) {
   return null;
 }
 
-export function renderTraceSteps(trace, cell = null) {
-  const nodes = [];
+/**
+ * One cell's trace steps, each entry carrying the trace index it starts at.
+ *
+ * Entries are what the ordered renderer places progress cards between; an
+ * interaction form is part of the entry it belongs to, or trails the steps.
+ */
+function traceEntries(trace, cell) {
+  const entries = [];
   let interactionRendered = false;
   const renderedInteractionIds = new Set();
   const history = (cell && cell.interaction_history) || [];
-  const plan = planFromTrace(trace || []);
-  if (plan) nodes.push(renderPlan(plan));
   const groups = visibleTraceGroups(
     groupTraceSteps(trace || []),
     cell && cell.status,
@@ -205,10 +200,10 @@ export function renderTraceSteps(trace, cell = null) {
   );
   for (const group of groups) {
     if (group.type === "text") {
-      nodes.push(traceTextNode(group.content));
+      entries.push({ index: group.index, nodes: [traceTextNode(group.content)] });
     } else if (group.type === "tool") {
       const toolNode = toolStepNode(group);
-      nodes.push(toolNode);
+      const nodes = [toolNode];
       const call = group.call;
       const completed =
         call && history.find((item) => item.tool_call_id === call.tool_call_id);
@@ -234,81 +229,72 @@ export function renderTraceSteps(trace, cell = null) {
         if (completed) renderedInteractionIds.add(completed.id);
         else interactionRendered = true;
       }
+      entries.push({ index: group.index, nodes });
     }
   }
+  const trailing = [];
   if (cell && cell.status === "waiting_for_input" && cell.interaction && !interactionRendered) {
-    nodes.push(renderInteraction(cell));
+    trailing.push(renderInteraction(cell));
   }
   for (const completed of history) {
     if (!renderedInteractionIds.has(completed.id)) {
-      nodes.push(renderInteraction(cell, completed));
+      trailing.push(renderInteraction(cell, completed));
     }
   }
-  return nodes;
-}
-
-/** Render a cell's own trace (plan node, steps, and pending interactions). */
-export function renderTrace(cell) {
-  return renderTraceSteps((cell && cell.trace) || [], cell);
-}
-
-function attachToolResult(node, result) {
-  node.classList.remove("pending");
-  const body = node.querySelector(".trace-body");
-  if (body) {
-    body.append(el("div", { class: "trace-io-label", text: "Output" }));
-    body.append(codeBlock(prettyValue(result.content)));
+  if (trailing.length) {
+    entries.push({ index: Number.MAX_SAFE_INTEGER, nodes: trailing });
   }
+  return entries;
 }
 
 /**
- * Append one live trace step to an existing trace container.
+ * Render a cell's trace contents: the plan, its streamed steps, and the
+ * progress cards of ``jobs``, each card at the trace index its job opened at.
  *
- * text_delta keeps growing the last text node, a tool_call registers a pending
- * node the matching tool_result fills in, and a plan step updates the plan node
- * in place.
+ * This is the one place the trace's document order is decided. Streaming draws
+ * in the same order (see :func:`storeStep`), so a repaint — switching tabs,
+ * refreshing the workspace, the end of a run — cannot move a card past the
+ * steps that came after it.
  */
-export function appendStep(container, step) {
-  if (step.type === "text_delta") {
-    const last = container.lastElementChild;
-    if (last && last.classList.contains("trace-text")) {
-      last.dataset.source = (last.dataset.source || "") + (step.content || "");
-      last.innerHTML = renderMarkdown(last.dataset.source);
-      container.scrollTop = container.scrollHeight;
-      return;
+export function renderTrace(cell, jobs = []) {
+  const trace = (cell && cell.trace) || [];
+  const plan = planFromTrace(trace);
+  const nodes = plan ? [renderPlan(plan)] : [];
+  const cards = (jobs || [])
+    .filter(Boolean)
+    .map((job) => ({ anchor: jobAnchor(job), node: renderJob(job, "trace") }))
+    .sort((left, right) => left.anchor - right.anchor);
+  let next = 0;
+  const drain = (limit) => {
+    while (next < cards.length && cards[next].anchor <= limit) {
+      nodes.push(cards[next].node);
+      next += 1;
     }
-    container.append(traceTextNode(step.content));
-  } else if (step.type === "text") {
-    container.append(traceTextNode(step.content));
-  } else if (step.type === "tool_call") {
-    const node = toolStepNode({ call: step, result: null });
-    container.append(node);
-    const pending = container._pending || (container._pending = new Map());
-    pending.set(step.tool_call_id || "seq:" + pending.size, { node, step });
-  } else if (step.type === "plan") {
-    updatePlan(container, step.items);
-  } else if (step.type === "tool_result") {
-    const pending = container._pending || (container._pending = new Map());
-    let entry = null;
-    if (step.tool_call_id && pending.has(step.tool_call_id)) {
-      entry = pending.get(step.tool_call_id);
-      pending.delete(step.tool_call_id);
-    } else {
-      for (const [key, candidate] of pending) {
-        if ((candidate.step.name || "") === (step.name || "")) {
-          entry = candidate;
-          pending.delete(key);
-          break;
-        }
-      }
-    }
-    if (entry) attachToolResult(entry.node, step);
-    else container.append(toolResultNode(step));
+  };
+  for (const entry of traceEntries(trace, cell)) {
+    drain(entry.index);
+    nodes.push(...entry.nodes);
   }
-  container.scrollTop = container.scrollHeight;
+  drain(Number.MAX_SAFE_INTEGER);
+  return nodes;
 }
 
-/** Store one streamed step on its cell and append it to that cell's live trace. */
+/**
+ * Where a job's card belongs: the number of steps its cell had published when
+ * the job opened. A job from a server that did not report one goes last.
+ */
+function jobAnchor(job) {
+  const anchor = Number(job && job.anchor);
+  return Number.isFinite(anchor) ? anchor : Number.MAX_SAFE_INTEGER;
+}
+
+/**
+ * Draw one freshly streamed step.
+ *
+ * A text delta that continues the rendered text node is the one update worth
+ * doing in place: any other step can move a card, the plan, or an interaction,
+ * so the container is rebuilt from the cell's own trace instead.
+ */
 function storeStep(cell, step) {
   if (!Array.isArray(cell.trace)) cell.trace = [];
   cell.trace.push(step);
@@ -316,10 +302,41 @@ function storeStep(cell, step) {
     window.setTimeout(() => reconcilePendingInteraction(cell.id), 150);
   }
   const container = document.querySelector('.cell[data-cell-id="' + cell.id + '"] .trace');
-  if (container) appendStep(container, step);
+  if (!container) return;
+  const last = container.lastElementChild;
+  if (step.type === "text_delta" && last && last.classList.contains("trace-text")) {
+    last.dataset.source = (last.dataset.source || "") + (step.content || "");
+    last.innerHTML = renderMarkdown(last.dataset.source);
+    container.scrollTop = container.scrollHeight;
+    return;
+  }
+  repaintTrace(cell);
 }
 
-/** Store a streamed trace step on its cell and append it to the live trace. */
+/**
+ * Repaint a cell's trace container from its trace and its progress jobs.
+ *
+ * Details the reader opened are reopened by key, so a repaint triggered by the
+ * next step does not collapse what is being read.
+ */
+export function repaintTrace(cell) {
+  if (!cell) return null;
+  const container = document.querySelector('.cell[data-cell-id="' + cell.id + '"] .trace');
+  if (!container) return null;
+  const open = new Set(
+    [...container.querySelectorAll("details[data-trace-key][open]")].map((node) =>
+      node.getAttribute("data-trace-key")
+    )
+  );
+  container.replaceChildren(...renderTrace(cell, jobsFor(cell.id)));
+  for (const node of container.querySelectorAll("details[data-trace-key]")) {
+    if (open.has(node.getAttribute("data-trace-key"))) node.setAttribute("open", "open");
+  }
+  container.scrollTop = container.scrollHeight;
+  return container;
+}
+
+/** Store a streamed trace step on its cell and draw it. */
 export function applyTrace(data) {
   if (!data || !data.step) return;
   const cell = state.cells.find((item) => item.id === data.id);

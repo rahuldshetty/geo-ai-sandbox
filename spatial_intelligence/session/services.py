@@ -70,6 +70,7 @@ class SessionServices:
         settings: Callable[[], dict],
         files_provider: Callable[[], list[str]],
         map_provider: Callable[[], dict],
+        trace_length: Callable[[str], int] | None = None,
         base_url: str | None = None,
     ) -> None:
         self._bus = bus
@@ -77,6 +78,7 @@ class SessionServices:
         self._settings = settings
         self._files_provider = files_provider
         self._map_provider = map_provider
+        self._trace_length = trace_length
         self._base_url = base_url or server_base_url()
         self._registry: ToolRegistry | None = None
         self._runtime: ToolRuntime | None = None
@@ -162,12 +164,18 @@ class SessionServices:
         that shared runtime. The run worker is the only runner, which is what
         makes this safe — and it is what keeps every progress job a tool opens
         attached to the cell that opened it.
+
+        The reporter also carries the run's anchor: the number of steps the cell
+        has published, read as each job opens, which is where the browser draws
+        that job's card.
         """
         runtime = self._runtime
         if runtime is None:
             raise RuntimeNotBoundError("no workspace is open")
         runtime.run_id = cell_id
-        runtime.reporter = self._jobs.reporter(parent_id=cell_id)
+        runtime.reporter = self._jobs.reporter(
+            parent_id=cell_id, anchor=self._anchor_for(cell_id)
+        )
         runtime.approved = self._approval_granted()
         try:
             yield runtime
@@ -175,6 +183,13 @@ class SessionServices:
             runtime.run_id = None
             runtime.reporter = self._jobs.reporter()
             runtime.approved = self._approval_granted()
+
+    def _anchor_for(self, cell_id: str) -> Callable[[], int | None]:
+        """Return a callable reading the cell's published step count."""
+        trace_length = self._trace_length
+        if trace_length is None:
+            return lambda: None
+        return lambda: trace_length(cell_id)
 
     def python_executor(self, runtime: ToolRuntime) -> Any:
         """Return the session's ``run_python`` executor (shared with the pack).

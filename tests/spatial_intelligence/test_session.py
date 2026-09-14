@@ -72,7 +72,7 @@ class SessionTestCase(unittest.TestCase):
             os.environ["GEOAI_HOME"] = self._previous_home
         self._tmp.cleanup()
 
-    def start(self, model) -> AppState:
+    def start(self, model, *, worker: bool = True) -> AppState:
         state = AppState(
             settings={
                 "model": model,
@@ -80,7 +80,8 @@ class SessionTestCase(unittest.TestCase):
                 "dangerous_mode": False,
                 "max_retries": 2,
                 "record_agent_steps": True,
-            }
+            },
+            worker=worker,
         )
         self.addCleanup(self._stop, state)
         state.open_workspace("session-test")
@@ -97,15 +98,18 @@ class SessionTestCase(unittest.TestCase):
         self.assertTrue(ok, f"cell stayed {cell['status']!r}")
         return cell
 
-    def drainevents(self, subscriber: queue.Queue, name: str) -> list[dict]:
-        collected: list[dict] = []
+    def drainall(self, subscriber: queue.Queue) -> list[tuple[str, dict]]:
+        """Every queued event as ``(name, data)``, oldest first."""
+        collected: list[tuple[str, dict]] = []
         while True:
             try:
                 item = subscriber.get_nowait()
             except queue.Empty:
                 return collected
-            if item["event"] == name:
-                collected.append(item["data"])
+            collected.append((item["event"], item["data"]))
+
+    def drainevents(self, subscriber: queue.Queue, name: str) -> list[dict]:
+        return [data for event, data in self.drainall(subscriber) if event == name]
 
 
 class PromptRunTests(SessionTestCase):
@@ -283,6 +287,14 @@ class ProgressJobTests(SessionTestCase):
         self.assertEqual(final[0]["artifact"], "data/scene.tif")
         self.assertEqual(final[0]["parent_id"], cell_id)
         self.assertEqual(final[0]["total"], 5)
+        # The anchor tells the browser which step opened the job, so its card
+        # can be drawn there again after a repaint.
+        anchor = final[0]["anchor"]
+        self.assertIsInstance(anchor, int)
+        self.assertEqual(
+            [step.get("name") for step in cell["trace"][:anchor]][-1], "download"
+        )
+        self.assertEqual(cell["trace"][anchor]["type"], "tool_result")
         # The snapshot endpoint carries the job list the UI restores from.
         snapshot = state.snapshot()
         self.assertEqual(snapshot["jobs"][0]["job_id"], final[0]["job_id"])
@@ -297,6 +309,7 @@ class ProgressJobTests(SessionTestCase):
             final="Done.",
         )
         state = self.start(model)
+        subscriber = state.subscribe()
         cell_id = state.add_cell("prompt", "get it")["cells"][-1]["id"]
 
         with patch(
@@ -306,13 +319,51 @@ class ProgressJobTests(SessionTestCase):
             state.run_cell(cell_id)
             self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
             first = state.snapshot()["jobs"]
+            self.drainevents(subscriber, "cell")
+            self.drainevents(subscriber, "jobs")
             state.run_cell(cell_id)
+            pruned = self.drainevents(subscriber, "jobs")
             self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
 
         second = state.snapshot()["jobs"]
         self.assertEqual(len(first), 1)
         self.assertEqual(len(second), 1)
         self.assertNotEqual(first[0]["job_id"], second[0]["job_id"])
+        # The browser holds its own job list, so forgetting the re-run's cards is
+        # announced instead of waiting for the next snapshot.
+        self.assertEqual([payload["jobs"] for payload in pruned], [[]])
+
+    def test_a_run_start_sends_the_whole_reset_cell(self):
+        """The browser repaints the cell from this event, not from a patch.
+
+        Regression: the event carried only ``id``/``status``/``trace``, so the
+        previous run's output stayed on screen until the new run finished.
+        """
+        state = self.start(answers_with("unused"), worker=False)
+        subscriber = state.subscribe()
+        cell_id = state.add_cell("prompt", "get it")["cells"][-1]["id"]
+        previous = state.notebook.find(cell_id)
+        previous["status"] = "done"
+        previous["outputs"] = [{"output_type": "stream", "text": "previous answer"}]
+        previous["trace"] = [{"type": "text", "content": "previous step"}]
+        job = state.jobs.reporter(parent_id=cell_id).job("download", "one.tif")
+        job.done(artifact="data/one.tif")
+        self.drainevents(subscriber, "cell")
+        self.drainevents(subscriber, "job")
+
+        state.run_cell(cell_id)
+
+        # published payloads alias the live cell, so this reads them with no
+        # worker running: the cell is still exactly what the run reset it to.
+        published = self.drainall(subscriber)
+        started = [data for name, data in published if name == "cell"][0]
+        pruned = [data for name, data in published if name == "jobs"]
+        self.assertEqual(
+            [started["status"], started["trace"], started["outputs"]],
+            ["running", [], []],
+        )
+        self.assertEqual(started["id"], cell_id)
+        self.assertEqual([payload["jobs"] for payload in pruned], [[]])
 
 
 class PythonCellTests(SessionTestCase):

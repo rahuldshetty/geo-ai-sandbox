@@ -61,14 +61,3 @@ export function renderPlan(items) {
   details.append(body);
   return details;
 }
-
-export function updatePlan(container, items) {
-  const existing = container.querySelector(".trace-plan");
-  if (!items || !items.length) {
-    if (existing) existing.remove();
-    return;
-  }
-  const node = renderPlan(items);
-  if (existing) existing.replaceWith(node);
-  else container.prepend(node);
-}

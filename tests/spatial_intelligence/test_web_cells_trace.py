@@ -513,6 +513,17 @@ export function jobsFor(cellId) {
   return (state.jobs || []).filter((job) => job.parent_id === cellId);
 }
 
+/** Mirrors the real store's step identity (see web/js/store.js). */
+export function stepKey(step) {
+  if (!step) return "";
+  if (step.tool_call_id) return step.type + ":" + step.tool_call_id;
+  if (step.type === "plan") return "plan:" + JSON.stringify(step.items || []);
+  if (step.type === "usage") return "usage:" + JSON.stringify(step.usage || null);
+  return (
+    step.type + ":" + (step.name || "") + ":" + String(step.content == null ? "" : step.content)
+  );
+}
+
 export function upsertJob(job) {
   const jobs = state.jobs || [];
   const index = jobs.findIndex((item) => item.job_id === job.job_id);
@@ -594,7 +605,7 @@ HARNESS = r'''
 import "./shim.mjs";
 import { createRequire } from "node:module";
 import { collect, dump, fire, tick } from "./shim.mjs";
-import { state, subscribe } from "./js/store.js";
+import { state, subscribe, upsertJob } from "./js/store.js";
 import { el } from "./js/dom.js";
 import * as markdown from "./js/components/markdown.js";
 import * as plan from "./js/components/plan.js";
@@ -649,17 +660,17 @@ const scenarios = {
     const names = (module, list) => list.map((name) => typeof module[name]);
     return {
       markdown: names(markdown, ["renderMarkdown", "visibleTraceGroups", "escapeHtml"]),
-      plan: names(plan, ["renderPlan", "planFromTrace", "updatePlan"]),
+      plan: names(plan, ["renderPlan", "planFromTrace"]),
       progress: names(progress, ["renderJob", "updateJob"]),
-      trace: names(trace, ["renderTrace", "appendStep", "groupTraceSteps", "renderStepNode"]),
+      trace: names(trace, ["renderTrace", "groupTraceSteps", "renderStepNode", "repaintTrace"]),
       interaction: names(interaction, ["renderInteraction", "revealInteraction"]),
       cell: names(cellModule, ["renderCell"]),
       cells: names(cellsPage, ["renderCellsTab", "renderCellsOnly", "renderAddCellRow", "editMarkdown", "focusCell", "addCell"]),
       aliases: {
         renderJobNode: progress.renderJobNode === progress.renderJob,
         updateJobNode: progress.updateJobNode === progress.updateJob,
-        renderTraceSteps: typeof trace.renderTraceSteps,
         applyTrace: typeof trace.applyTrace,
+        flushPendingTrace: typeof trace.flushPendingTrace,
         reconcile: typeof interaction.reconcilePendingInteraction,
       },
     };
@@ -755,39 +766,91 @@ const scenarios = {
     };
   },
 
-  async append() {
-    const container = el("div", { class: "trace" });
-    trace.appendStep(container, { type: "text_delta", content: "He" });
-    trace.appendStep(container, { type: "text_delta", content: "llo" });
-    const textCount = container.childNodes.length;
-    const textSource = container.lastElementChild.dataset.source;
-    trace.appendStep(container, { type: "tool_call", name: "run_python", args: { code: "2+2" }, tool_call_id: "t1" });
-    const pending = container.lastElementChild;
-    const pendingClass = pending.getAttribute("class");
-    const childCountBefore = container.childNodes.length;
-    trace.appendStep(container, { type: "tool_result", name: "run_python", content: "4", tool_call_id: "t1" });
-    const fallback = el("div", { class: "trace" });
-    trace.appendStep(fallback, { type: "tool_call", name: "write_file", args: {}, tool_call_id: null });
-    trace.appendStep(fallback, { type: "tool_result", name: "write_file", content: "ok", tool_call_id: null });
-    const orphan = el("div", { class: "trace" });
-    trace.appendStep(orphan, { type: "tool_result", name: "ghost", content: "x", tool_call_id: null });
-    const planContainer = el("div", { class: "trace" });
-    trace.appendStep(planContainer, { type: "plan", items: [{ id: "1", content: "step one", status: "pending" }] });
-    trace.appendStep(planContainer, { type: "plan", items: [{ id: "1", content: "step one", status: "completed" }] });
+  async layout() {
+    globalThis.marked = marked;
+    // A finished download step with a message before it and one after it.
+    const steps = [
+      { type: "text_delta", content: "Looking for the file." },
+      { type: "tool_call", name: "download", args: { url: "http://x/f.geojson" }, tool_call_id: "t1" },
+      { type: "tool_result", name: "download", content: "data/f.geojson", tool_call_id: "t1" },
+      { type: "text_delta", content: "Saved it." },
+    ];
+    const cell = makeCell({ id: "c1", kind: "prompt", source: "download it", status: "running", trace: steps });
+    const card = (anchor) =>
+      makeJob({
+        job_id: "j" + String(anchor),
+        parent_id: "c1",
+        status: "done",
+        label: "f.geojson",
+        unit: "bytes",
+        completed: 3145728,
+        total: 3145728,
+        anchor,
+      });
+    const outline = (node) =>
+      [...node.children].map((child) => ({
+        class: child.getAttribute("class"),
+        job: child.getAttribute("data-job-id"),
+        source: child.dataset.source || null,
+        text: child.textContent.replace(/\s+/g, " ").trim().slice(0, 60),
+      }));
+
+    // (a) A job opened after the two steps of the download call renders there:
+    //     behind the tool call, ahead of the message that followed it.
+    const anchored = outline(cellModule.renderCell(cell, [card(2)]).querySelector(".trace"));
+    // (b) A job whose server reported no anchor can only go last.
+    const legacy = outline(
+      cellModule.renderCell(cell, [makeJob({ job_id: "j9", parent_id: "c1", status: "done" })]).querySelector(".trace")
+    );
+
+    // (c) Streamed live, the same cell and job must draw in that same order —
+    //     including after a repaint, which is what a tab switch or a workspace
+    //     refresh does.
+    state.cells = [{ ...JSON.parse(JSON.stringify(cell)), trace: [] }];
+    state.jobs = [];
+    state.selected_tab = "Cells";
+    const content = el("div", { id: "tab-content" });
+    document.body.append(content);
+    cellsPage.renderCellsOnly();
+    for (const step of steps) trace.applyTrace({ id: "c1", step });
+    const streamed = outline(document.querySelector('.cell[data-cell-id="c1"] .trace'));
+    upsertJob(card(2));
+    trace.repaintTrace(state.cells[0]);
+    const repainted = outline(document.querySelector('.cell[data-cell-id="c1"] .trace'));
+    trace.repaintTrace(state.cells[0]);
+    const twice = outline(document.querySelector('.cell[data-cell-id="c1"] .trace'));
+
+    // (d) A tool result that lands after a repaint fills the call it answers
+    //     instead of splitting into a second node.
+    const live = state.cells[0];
+    live.trace = [];
+    trace.repaintTrace(live);
+    trace.applyTrace({ id: "c1", step: { type: "text_delta", content: "Reading files." } });
+    trace.applyTrace({ id: "c1", step: { type: "tool_call", name: "list_files", args: {}, tool_call_id: "t2" } });
+    const midCall = document.querySelector('.cell[data-cell-id="c1"] .trace details[data-trace-key]');
+    trace.repaintTrace(live); // an unrelated repaint lands mid-call
+    trace.applyTrace({ id: "c1", step: { type: "tool_result", name: "list_files", content: "a.tif", tool_call_id: "t2" } });
+    const paired = dump(document.querySelector('.cell[data-cell-id="c1"] .trace'));
+
+    // (e) A tool call the reader expanded stays open across a repaint.
+    const container = document.querySelector('.cell[data-cell-id="c1"] .trace');
+    const details = container.querySelector("details[data-trace-key]");
+    details.setAttribute("open", "open");
+    trace.repaintTrace(live);
+    const reopened = document
+      .querySelector('.cell[data-cell-id="c1"] .trace')
+      .querySelector("details[data-trace-key]")
+      .hasAttribute("open");
+
     return {
-      text_count: textCount,
-      text_source: textSource,
-      text_html: container.firstElementChild.innerHTML,
-      pending_class: pendingClass,
-      child_count_before: childCountBefore,
-      child_count_after: container.childNodes.length,
-      paired_identity: container.lastElementChild === pending,
-      paired_class: pending.getAttribute("class"),
-      paired: dump(pending),
-      fallback: dump(fallback),
-      orphan: dump(orphan),
-      plan_count: planContainer.children.filter((node) => node.classList.contains("trace-plan")).length,
-      plan: dump(planContainer),
+      anchored,
+      legacy,
+      streamed,
+      repainted,
+      twice,
+      mid_call: midCall && midCall.getAttribute("class"),
+      paired,
+      reopened,
     };
   },
 
@@ -934,10 +997,10 @@ const scenarios = {
       ],
     });
     return {
-      done: trace.renderTraceSteps(done.trace, done).map(dump),
+      done: trace.renderTrace(done).map(dump),
       done_count: trace.renderTrace(done).length,
-      waiting: trace.renderTraceSteps(waiting.trace, waiting).map(dump),
-      plan: trace.renderTraceSteps(planCell.trace, planCell).map(dump),
+      waiting: trace.renderTrace(waiting).map(dump),
+      plan: trace.renderTrace(planCell).map(dump),
     };
   },
 
@@ -1264,8 +1327,8 @@ class ExportsTests(ScenarioCase):
             {
                 "renderJobNode": True,
                 "updateJobNode": True,
-                "renderTraceSteps": "function",
                 "applyTrace": "function",
+                "flushPendingTrace": "function",
                 "reconcile": "function",
             },
         )
@@ -1379,35 +1442,61 @@ class TraceGroupingTests(ScenarioCase):
         self.assertIsNone(self.result["empty"])
 
 
-class TraceAppendTests(ScenarioCase):
-    SCENARIO = "append"
+class TraceLayoutTests(ScenarioCase):
+    """Where a progress card sits in the trace, live and after a repaint.
 
-    def test_text_delta_grows_one_node(self):
-        self.assertEqual(self.result["text_count"], 1)
-        self.assertEqual(self.result["text_source"], "Hello")
-        self.assertIn("<p>Hello</p>", self.result["text_html"])
+    Regression: the renderer drew every step first and every job card last, so
+    any repaint — switching tabs, refreshing the workspace from the Data tab, the
+    end of a run — moved a card past the messages streamed after it, and a tool
+    result arriving after a repaint could no longer fill its pending call.
+    """
 
-    def test_tool_result_fills_the_pending_node_in_place(self):
-        self.assertEqual(self.result["child_count_before"], 2)
-        self.assertEqual(self.result["child_count_after"], 2)
-        self.assertIn("pending", self.result["pending_class"])
-        self.assertTrue(self.result["paired_identity"])
-        self.assertNotIn("pending", self.result["paired_class"])
-        labels = [part["text"] for part in find_all(self.result["paired"], cls="trace-io-label")]
-        self.assertEqual(labels, ["Input", "Output"])
+    SCENARIO = "layout"
 
-    def test_name_fallback_pairing_and_orphan_results(self):
-        self.assertEqual(self.result["fallback"]["children"][0]["class"], "trace-step tool-call")
-        self.assertNotIn("pending", self.result["fallback"]["children"][0]["class"])
-        self.assertEqual(self.result["orphan"]["children"][0]["class"], "trace-step tool-result")
+    def test_a_card_renders_at_the_step_that_opened_it(self):
+        classes = [child["class"] for child in self.result["anchored"]]
+        self.assertEqual(
+            classes,
+            [
+                "trace-step trace-text markdown",
+                "trace-step tool-call",
+                "trace-step download-trace download-progress-node",
+                "trace-step trace-text markdown",
+            ],
+        )
+        texts = [child["source"] for child in self.result["anchored"]]
+        self.assertEqual(texts, ["Looking for the file.", None, None, "Saved it."])
 
-    def test_plan_steps_update_the_plan_node_in_place(self):
-        self.assertEqual(self.result["plan_count"], 1)
-        plan = self.one(self.result["plan"], cls="trace-plan")
-        self.assertEqual(self.one(plan, cls="plan-progress-fill")["style"]["width"], "100%")
-        self.assertIn("1/1 done", plan["text"])
-        self.assertEqual(len(find_all(plan, cls="plan-item")), 1)
-        self.assertIn("plan-completed", find_all(plan, cls="plan-item")[0]["class"])
+    def test_a_card_without_an_anchor_goes_last(self):
+        classes = [child["class"] for child in self.result["legacy"]]
+        self.assertEqual(classes[-1], "trace-step download-trace download-progress-node")
+
+    def test_the_live_stream_then_its_card_match_a_full_render(self):
+        self.assertEqual(
+            [child["class"] for child in self.result["streamed"]],
+            [
+                "trace-step trace-text markdown",
+                "trace-step tool-call",
+                "trace-step trace-text markdown",
+            ],
+        )
+        self.assertEqual(self.result["repainted"], self.result["anchored"])
+        self.assertEqual(self.result["twice"], self.result["anchored"])
+
+    def test_a_result_arriving_after_a_repaint_fills_its_call(self):
+        self.assertIn("pending", self.result["mid_call"])
+        nodes = self.result["paired"]["children"]
+        self.assertEqual([node["class"] for node in nodes].count("trace-step tool-call"), 1)
+        self.assertEqual(find_all(self.result["paired"], cls="tool-result"), [])
+        call = find_all(self.result["paired"], cls="tool-call")[0]
+        self.assertNotIn("pending", call["class"])
+        self.assertEqual(
+            [label["text"] for label in find_all(call, cls="trace-io-label")], ["Input", "Output"]
+        )
+        self.assertIn("a.tif", call["text"])
+
+    def test_a_repaint_keeps_a_tool_call_the_reader_opened_open(self):
+        self.assertTrue(self.result["reopened"])
 
 
 class ApplyTraceTests(ScenarioCase):
@@ -1430,9 +1519,11 @@ class ApplyTraceTests(ScenarioCase):
         self.assertEqual(
             self.result["boot_steps"], ["tool_call", "tool_result", "text_delta"]
         )
+        # The replayed result fills the call the snapshot already carried, and
+        # the text follows it: the buffer draws the same nodes a reload would.
         self.assertEqual(
             self.result["boot_nodes"],
-            ["trace-step tool-result", "trace-step trace-text markdown"],
+            ["trace-step tool-call", "trace-step trace-text markdown"],
         )
 
     def test_the_buffer_closes_once_the_snapshot_has_landed(self):

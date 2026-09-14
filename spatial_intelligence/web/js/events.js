@@ -3,7 +3,7 @@ backoff (the browser's built-in retry is short and bursty after a restart). */
 
 "use strict";
 
-const EVENT_ROUTES = ["cell", "trace", "job", "map", "files", "settings"];
+const EVENT_ROUTES = ["cell", "trace", "job", "jobs", "map", "files", "settings"];
 const INITIAL_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30000;
 

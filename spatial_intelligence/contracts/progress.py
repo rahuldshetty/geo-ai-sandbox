@@ -13,6 +13,7 @@ job instead of one per *kind* of job.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from threading import RLock
@@ -51,6 +52,10 @@ class ProgressEvent:
     artifact: str | None = None
     error: str | None = None
     parent_id: str | None = None
+    #: How many steps the owning cell had published when the job opened. The
+    #: browser draws the job's card at that trace position, so a repaint puts it
+    #: back where the live stream had it instead of at the end of the trace.
+    anchor: int | None = None
 
     def as_dict(self) -> dict:
         """Return the JSON-safe payload for the SSE consumer."""
@@ -66,6 +71,7 @@ class ProgressEvent:
             "artifact": self.artifact,
             "error": self.error,
             "parent_id": self.parent_id,
+            "anchor": self.anchor,
         }
 
 
@@ -93,6 +99,7 @@ class Job:
         "_label",
         "_unit",
         "_parent_id",
+        "_anchor",
         "_lock",
         "_state",
         "_completed",
@@ -113,6 +120,7 @@ class Job:
         unit: str = "units",
         total: float | None = None,
         parent_id: str | None = None,
+        anchor: int | None = None,
     ) -> None:
         self.id = job_id
         self._sink = sink
@@ -120,6 +128,7 @@ class Job:
         self._label = label
         self._unit = unit
         self._parent_id = parent_id
+        self._anchor = anchor
         self._lock = RLock()
         self._state = JobState.RUNNING
         self._completed: float = 0.0
@@ -233,6 +242,7 @@ class Job:
             artifact=self._artifact,
             error=self._error,
             parent_id=self._parent_id,
+            anchor=self._anchor,
         )
         try:
             sink.emit(event)
@@ -249,13 +259,18 @@ class Reporter:
     every job automatically carries the run it belongs to as ``parent_id``.
     """
 
-    __slots__ = ("_sink", "_parent_id")
+    __slots__ = ("_sink", "_parent_id", "_anchor")
 
     def __init__(
-        self, sink: ProgressSink | None = None, *, parent_id: str | None = None
+        self,
+        sink: ProgressSink | None = None,
+        *,
+        parent_id: str | None = None,
+        anchor: Callable[[], int | None] | None = None,
     ) -> None:
         self._sink = sink
         self._parent_id = parent_id
+        self._anchor = anchor
 
     @property
     def sink(self) -> ProgressSink | None:
@@ -283,15 +298,25 @@ class Reporter:
             unit=unit,
             total=total,
             parent_id=self._parent_id if parent_id is _UNSET else parent_id,  # type: ignore[arg-type]
+            anchor=self._anchor() if self._anchor is not None else None,
         )
 
     def rebind(
-        self, *, sink: ProgressSink | None = None, parent_id: str | None = None
+        self,
+        *,
+        sink: ProgressSink | None = None,
+        parent_id: str | None = None,
+        anchor: Callable[[], int | None] | None = None,
     ) -> "Reporter":
-        """Return a reporter for the same session with a different owner."""
+        """Return a reporter for the same session with a different owner.
+
+        The anchor is not inherited: it answers where a job starts inside the
+        cell that owns the reporter, and a rebound reporter may own another.
+        """
         return Reporter(
             self._sink if sink is None else sink,
             parent_id=self._parent_id if parent_id is None else parent_id,
+            anchor=anchor,
         )
 
 

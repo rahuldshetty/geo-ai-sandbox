@@ -4,8 +4,7 @@ import { el, expandableContent, toast, usageLabel, usageTitle } from "../dom.js"
 import { deleteCell, moveCell, runCell, stopCell, updateCell } from "../api.js";
 import { state } from "../store.js";
 import { cellOutputText, renderMarkdown } from "./markdown.js";
-import { renderTraceSteps } from "./trace.js";
-import { renderJob } from "./progress.js";
+import { renderTrace } from "./trace.js";
 import { editMarkdown } from "../pages/cells.js";
 
 /** Fire a cell action, surfacing its failure the way the old app did. */
@@ -234,15 +233,14 @@ export function renderCell(cell, jobs = []) {
     if (output) box.append(output);
   }
 
-  const jobNodes = jobs.map((job) => renderJob(job, "trace"));
-  const traceNodes = renderTraceSteps(cell.trace || [], cell).filter(Boolean);
+  const traceNodes = renderTrace(cell, jobs);
   // A prompt cell always mounts its trace container, even while it is empty:
   // live steps stream in before the first one is part of the cell snapshot, and
   // appending needs the mount point to already exist. Other kinds mount one
   // only when they have something to show (a job strip, or a replayed trace).
-  if (kind === "prompt" || traceNodes.length || jobNodes.length) {
+  if (kind === "prompt" || traceNodes.length) {
     const trace = el("div", { class: "trace" });
-    trace.append(...traceNodes, ...jobNodes);
+    trace.append(...traceNodes);
     box.append(trace);
   }
 

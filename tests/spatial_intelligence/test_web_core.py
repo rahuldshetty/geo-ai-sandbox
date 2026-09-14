@@ -473,6 +473,49 @@ await scenario("store", async () => {
   store.setState({ cells: [] });
   eq("store.usage_empty", store.usageTotals().has, false);
 
+  // A snapshot is built before its response arrives: a running cell keeps the
+  // steps streamed while the request was in flight instead of dropping them.
+  store.setState({
+    cells: [
+      {
+        id: "live",
+        kind: "prompt",
+        status: "running",
+        trace: [
+          { type: "text_delta", content: "Downloading." },
+          { type: "tool_call", name: "download", tool_call_id: "t1" },
+          { type: "tool_result", name: "download", tool_call_id: "t1", content: "f.geojson" },
+        ],
+      },
+      { id: "done", kind: "prompt", status: "running", trace: [{ type: "text", content: "old" }] },
+    ],
+  });
+  store.applySnapshot({
+    active_workspace: "ws",
+    cells: [
+      {
+        id: "live",
+        kind: "prompt",
+        status: "running",
+        trace: [
+          { type: "text_delta", content: "Downloading." },
+          { type: "tool_call", name: "download", tool_call_id: "t1" },
+        ],
+      },
+      { id: "done", kind: "prompt", status: "done", trace: [] },
+      { id: "fresh", kind: "prompt", status: "idle", trace: [] },
+    ],
+  });
+  const kept = store.state.cells.find((cell) => cell.id === "live");
+  eq("store.snapshot_keeps_streamed_tail", kept.trace.length, 3);
+  eq("store.snapshot_starts_snapshot_steps", kept.trace.map((step) => step.type), [
+    "text_delta",
+    "tool_call",
+    "tool_result",
+  ]);
+  eq("store.snapshot_replaces_a_finished_cell", store.state.cells.find((cell) => cell.id === "done").trace, []);
+  eq("store.snapshot_adds_new_cells", store.state.cells.map((cell) => cell.id), ["live", "done", "fresh"]);
+
   store.applySnapshot({
     active_workspace: "ws",
     workspaces: ["ws"],
@@ -616,6 +659,7 @@ await scenario("events", async () => {
       onCell: (payload) => received.push(["cell", payload]),
       onTrace: (payload) => received.push(["trace", payload]),
       onJob: (payload) => received.push(["job", payload]),
+      onJobs: (payload) => received.push(["jobs", payload]),
       onMap: (payload) => received.push(["map", payload]),
       onFiles: (payload) => received.push(["files", payload]),
       onSettings: (payload) => received.push(["settings", payload]),
@@ -627,13 +671,13 @@ await scenario("events", async () => {
     eq(
       "events.registered_events",
       [...source.listeners.keys()].sort(),
-      ["cell", "files", "job", "map", "open", "settings", "trace"]
+      ["cell", "files", "job", "jobs", "map", "open", "settings", "trace"]
     );
 
-    for (const name of ["cell", "trace", "job", "map", "files", "settings"]) {
+    for (const name of ["cell", "trace", "job", "jobs", "map", "files", "settings"]) {
       source.emit(name, JSON.stringify({ name }));
     }
-    eq("events.dispatch", received, ["cell", "trace", "job", "map", "files", "settings"].map((name) => [name, { name }]));
+    eq("events.dispatch", received, ["cell", "trace", "job", "jobs", "map", "files", "settings"].map((name) => [name, { name }]));
 
     const before = received.length;
     source.emit("cell", "{not json");
