@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Spatial Intelligence
+GenericName=Geospatial AI workspace
+Comment=Geospatial-analysis agent in a web workspace
+Exec=spatial-intelligence
+Icon=spatial-intelligence
+Terminal=false
+Categories=Science;Geography;
+StartupNotify=false

@@ -1,0 +1,74 @@
+"""Agent construction: one agent per session, built from the tool registry."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from pydantic_ai import Agent, DeferredToolRequests
+from pydantic_ai.capabilities import ReinjectSystemPrompt
+from pydantic_ai_harness import (
+    ClearToolResults,
+    Planning,
+    SummarizingCompaction,
+    TieredCompaction,
+)
+from pydantic_ai_harness.planning import InMemoryPlanStore
+
+from ..tools.registry import ToolRegistry
+from .capabilities import NormalizeDuplicateToolNames, ToolFailurePolicy
+from .model import resolve_model
+from .prompt import SYSTEM_PROMPT
+
+#: Retry prompts one tool call may produce before the run is stopped.
+#:
+#: ``ToolFailurePolicy`` answers every tool failure it can see with a failed
+#: result instead of a retry prompt, so this budget only ever bounds a call the
+#: policy never sees: a tool name the model is not allowed to call yet (an
+#: unknown name, or a deferred tool it never discovered).
+TOOL_RETRIES = 3
+
+
+@dataclass(slots=True)
+class BuiltAgent:
+    """An agent plus the plan store its Planning capability writes into."""
+
+    agent: Agent
+    plan_store: InMemoryPlanStore
+
+
+def build_agent(
+    registry: ToolRegistry,
+    model: str | Callable[[], str],
+    *,
+    tool_retries: int = TOOL_RETRIES,
+) -> BuiltAgent:
+    """Build a pydantic-ai ``Agent`` with every registered tool.
+
+    ``registry`` supplies both the tools and their metadata (core visibility,
+    approval, timeouts, sequencing); nothing about a tool is restated here.
+    ``model`` may be a model string or a zero-argument callable returning one,
+    so a settings change can be picked up without rebuilding this function.
+    """
+    plan_store = InMemoryPlanStore()
+    agent: Agent = Agent(
+        resolve_model(model() if callable(model) else model),
+        system_prompt=SYSTEM_PROMPT,
+        output_type=[str, DeferredToolRequests],
+        retries={"tools": tool_retries},
+        capabilities=[
+            ReinjectSystemPrompt(),
+            Planning(store=plan_store),
+            NormalizeDuplicateToolNames(),
+            ToolFailurePolicy(),
+            TieredCompaction(
+                tiers=[
+                    ClearToolResults(max_tokens=1, keep_pairs=3),
+                    SummarizingCompaction(max_messages=1, keep_messages=20),
+                ],
+                target_fraction=0.5,
+            ),
+        ],
+    )
+    registry.build(agent)
+    return BuiltAgent(agent=agent, plan_store=plan_store)

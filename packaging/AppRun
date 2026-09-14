@@ -5,4 +5,4 @@ HERE="$(dirname "$(readlink -f "$0")")"
 # which cannot resolve in a frozen bundle and aborts at startup. The harness
 # uses no logfire instrumentation, so switch the plugin off.
 export LOGFIRE_PYDANTIC_RECORD=off
-exec "$HERE/usr/bin/geo-ai" "$@"
+exec "$HERE/usr/bin/spatial-intelligence" "$@"

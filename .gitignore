@@ -32,7 +32,7 @@ MANIFEST
 #   The hand-maintained app bundle spec under packaging/ must stay tracked.
 *.manifest
 *.spec
-!packaging/geo-ai.spec
+!packaging/spatial-intelligence.spec
 
 # Installer logs
 pip-log.txt
@@ -162,8 +162,8 @@ ENV/
 env.bak/
 venv.bak/
 
-# Downloaded browser assets (bootstrapped by geoai.server.assets)
-geoai/server/static/vendor/marked.min.js
+# Downloaded browser assets (bootstrapped by the server on first start)
+spatial_intelligence/web/vendor/marked.min.js
 
 # Spyder project settings
 .spyderproject
@@ -225,7 +225,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Geo-AI harness
+# Spatial Intelligence
 workspaces/
 ARCHITECTURE.local.md
 opencode-go.env
+
+
+hack/
