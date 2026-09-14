@@ -106,6 +106,8 @@ class EnvTests(DataRootTestCase):
         self.assertEqual(env.model_provider("openai:gpt-4o"), "openai")
         self.assertEqual(env.model_provider("gemini-2.5-pro"), "openai")
         self.assertEqual(env.api_key_env_for("anthropic:claude-sonnet-4"), "ANTHROPIC_API_KEY")
+        self.assertEqual(env.api_key_env_for("openai-chat:qwen3"), "OPENAI_API_KEY")
+        self.assertEqual(env.api_key_env_for("openai-responses:gpt-5"), "OPENAI_API_KEY")
         self.assertIsNone(env.api_key_env_for("ollama:llama3"))
 
     def test_max_retries_defaults_and_clamps(self):
@@ -119,7 +121,10 @@ class EnvTests(DataRootTestCase):
             self.assertEqual(env.max_retries(), 5)
 
     def test_validate_env_refuses_to_start_without_the_provider_key(self):
-        with patch.dict(os.environ, {"GEOAI_MODEL": "openai:gpt-4o", "OPENAI_API_KEY": ""}):
+        with patch.dict(
+            os.environ,
+            {"GEOAI_MODEL": "openai:gpt-4o", "OPENAI_API_KEY": "", "OPENAI_BASE_URL": ""},
+        ):
             with self.assertRaises(SystemExit) as caught:
                 env.validate_env()
         self.assertIn("OPENAI_API_KEY", str(caught.exception))
@@ -129,6 +134,30 @@ class EnvTests(DataRootTestCase):
             env.validate_env()
         with patch.dict(os.environ, {"GEOAI_MODEL": "ollama:llama3"}):
             env.validate_env()
+
+    def test_validate_env_allows_a_custom_endpoint_without_a_key(self):
+        # A locally served OpenAI-compatible model usually checks no key, and
+        # pydantic-ai substitutes a placeholder for one; refusing to start would
+        # reject the deployment that works.
+        with patch.dict(
+            os.environ,
+            {
+                "GEOAI_MODEL": "openai-chat:qwen3",
+                "OPENAI_API_KEY": "",
+                "OPENAI_BASE_URL": "http://127.0.0.1:8080/v1",
+            },
+        ):
+            env.validate_env()
+
+    def test_validate_env_still_requires_the_key_without_a_custom_endpoint(self):
+        with patch.dict(
+            os.environ,
+            {"GEOAI_MODEL": "openai-chat:qwen3", "OPENAI_API_KEY": "", "OPENAI_BASE_URL": ""},
+        ):
+            with self.assertRaises(SystemExit) as caught:
+                env.validate_env()
+
+        self.assertIn("OPENAI_API_KEY", str(caught.exception))
 
     def test_validate_env_reads_the_provider_key_from_the_data_root_env_file(self):
         # Regression: start-up validated before anything read <app_root>/.env, so

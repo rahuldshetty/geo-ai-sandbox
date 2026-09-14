@@ -43,7 +43,7 @@ export function openSettingsDialog() {
     recordStepsInput.checked = state.settings.record_agent_steps !== false;
 
     dialog.append(
-      row("Model", "e.g. openai:gpt-4o, anthropic:claude-sonnet-4-5", modelInput),
+      row("Model", "e.g. openai:gpt-4o, openai-chat:qwen3 (local endpoint), anthropic:claude-sonnet-4-5", modelInput),
       row("Theme", "app shell appearance", themeSelect),
       row(
         "Transient attempts",

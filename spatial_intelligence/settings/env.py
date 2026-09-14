@@ -43,6 +43,10 @@ def model_from_env() -> str:
 # Model provider prefix -> env var holding its API key (None = no key required).
 _PROVIDER_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
+    # `openai-chat:` and `openai-responses:` pick the OpenAI-compatible API for a
+    # custom endpoint (see `agent.model.resolve_model`); the key is the same one.
+    "openai-chat": "OPENAI_API_KEY",
+    "openai-responses": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "google-gla": "GOOGLE_API_KEY",
     "google-gemini": "GOOGLE_API_KEY",
@@ -63,6 +67,16 @@ def api_key_env_for(model: str) -> str | None:
     return _PROVIDER_API_KEY_ENV.get(model_provider(model))
 
 
+def _key_is_optional(key_var: str) -> bool:
+    """Return whether a custom endpoint makes ``key_var`` optional.
+
+    pydantic-ai substitutes a placeholder key when ``OPENAI_BASE_URL`` is set and
+    ``OPENAI_API_KEY`` is not, because a locally served OpenAI-compatible model
+    usually wants none. Refusing to start would reject the deployment that works.
+    """
+    return key_var == "OPENAI_API_KEY" and bool(os.getenv("OPENAI_BASE_URL", "").strip())
+
+
 def validate_env() -> None:
     """Refuse to start when the configured model's provider key is missing.
 
@@ -70,6 +84,8 @@ def validate_env() -> None:
     documented sources: the process environment and that file. Loading inside
     the check is deliberate — start-up used to validate before anything had read
     the file, which reported a key that is present in ``.env`` as missing.
+
+    A custom ``OPENAI_BASE_URL`` makes the key optional (see ``_key_is_optional``).
 
     Raises ``SystemExit`` with a setup hint when the required variable is absent
     or empty, so a user never hits a late 500 while creating a workspace.
@@ -80,6 +96,8 @@ def validate_env() -> None:
     if key_var is None:
         return
     if os.getenv(key_var, "").strip():
+        return
+    if _key_is_optional(key_var):
         return
     env_file = app_root() / ".env"
     if env_file.is_file():

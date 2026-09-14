@@ -29,8 +29,8 @@ installed copy.
 | Variable | Purpose |
 | --- | --- |
 | `OPENAI_API_KEY` | Provider API key (OpenAI / Azure / compatible endpoints). |
-| `OPENAI_BASE_URL` | Optional custom OpenAI-compatible endpoint (Azure OpenAI, LiteLLM, vLLM, OpenRouter, local proxy). Leave empty for OpenAI's default. |
-| `GEOAI_MODEL` | Model string. Default `openai:gpt-4o`. Also `anthropic:claude-sonnet-4-5`, `google-gla:gemini-2.5-pro`, `ollama:llama3.1`. |
+| `OPENAI_BASE_URL` | Optional custom OpenAI-compatible endpoint (Azure OpenAI, LiteLLM, vLLM, llama.cpp, Ollama, OpenRouter, DeepSeek). Leave empty for OpenAI's default. With a base URL set, `openai:` and `openai-chat:` use the Chat Completions API and `openai-responses:` the Responses API; the API key becomes optional. |
+| `GEOAI_MODEL` | Model string. Default `openai:gpt-4o`. Also `openai-chat:qwen3` (a Chat Completions endpoint), `openai-responses:gpt-5`, `anthropic:claude-sonnet-4-5`, `google-gla:gemini-2.5-pro`, `ollama:llama3.1`. |
 | `GEOAI_WORKSPACE` | Optional default workspace name (overrides the notebook default). |
 | `GEOAI_HOME` | Optional data root (defaults to the repo root in a checkout). |
 | `GEOAI_MAX_RETRIES` | Transient model/API attempts per prompt run before reporting an error (default `5`). |
