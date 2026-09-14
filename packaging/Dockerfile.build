@@ -7,12 +7,23 @@
 #
 #   docker build -f packaging/Dockerfile.build --output dist .
 #
+# The base image is overridable, so a blocked or throttled registry can be
+# swapped without editing this file (see packaging/README.md):
+#
+#   docker build -f packaging/Dockerfile.build --output dist \
+#       --build-arg BASE_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:2026.09.05-1 .
+#
 # Output: dist/spatial-intelligence-<version>-x86_64.AppImage
 
-FROM quay.io/pypa/manylinux_2_28_x86_64 AS build
+# pypa publishes manylinux only on quay.io. Keep the glibc floor at 2.28: the
+# AppImage inherits it, and that is what lets the artifact run on hosts from
+# roughly 2019 on.
+ARG BASE_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:latest
 
-# PyInstaller requires a shared libpython; manylinux's bundled CPython is
-# built static, so provision a python-build-standalone interpreter via uv.
+FROM ${BASE_IMAGE} AS build
+
+# PyInstaller requires a shared libpython. manylinux's bundled CPython is built
+# static, so provision a python-build-standalone interpreter via uv.
 # UV_PYTHON_PREFERENCE=only-managed stops uv from linking the venv to the
 # (static) manylinux CPython it would otherwise discover first.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv

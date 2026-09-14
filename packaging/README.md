@@ -35,13 +35,61 @@ Two things the image does that the dev checkout does not:
 - It pins CPython 3.12 (`uv venv --python 3.12`) rather than taking uv's
   default, so the bundled interpreter is the one the project is developed on.
 
+### Registry access and the base image
+
+`pypa` publishes the manylinux images **only on quay.io** — there is no Docker
+Hub mirror. The base is therefore a build argument, so a blocked or throttled
+registry never needs a Dockerfile edit:
+
+```bash
+packaging/build-appimage.sh dist \
+    --build-arg BASE_IMAGE=quay.io/pypa/manylinux_2_28_x86_64:2026.09.05-1
+```
+
+Pinning a dated tag instead of `:latest` also makes a build reproducible; the
+available tags are listed at
+<https://quay.io/repository/pypa/manylinux_2_28_x86_64?tab=tags>.
+
+A failure while *resolving the base* (`failed to resolve source metadata for
+quay.io/...: read: connection reset by peer`) is a problem on the build host's
+network path, not in this Dockerfile — quay.io answers an unauthenticated
+`GET /v2/` with `401`. In order:
+
+1. Retry. Transient resets are the common case:
+   `docker pull quay.io/pypa/manylinux_2_28_x86_64:latest`.
+2. Confirm reachability from the host running Docker:
+   `curl -sI https://quay.io/v2/` should print `401 Unauthorized`. A timeout or
+   a reset means DNS, a proxy, or a firewall on that path.
+3. If the daemon is behind a proxy, configure it for the *daemon* as well
+   (`HTTPS_PROXY` in `/etc/systemd/system/docker.service.d/http-proxy.conf` on
+   Linux, or Docker Desktop → Settings → Resources → Proxies). On WSL an
+   oversized MTU is a known cause of TLS resets: `ip link set dev eth0 mtu 1400`.
+4. Use a different base. Any image with **glibc 2.28 or older** works, because
+   the interpreter comes from uv (`uv venv --python 3.12` fetches
+   python-build-standalone) rather than from the base:
+   `--build-arg BASE_IMAGE=rockylinux:8`. Rocky 8 is glibc 2.28, so the
+   portability floor is unchanged; the only requirement is that `curl` exists in
+   the image for the appimagetool download. Third-party GHCR mirrors of the
+   manylinux images exist too, but they are not published by pypa — check the
+   digest before trusting one.
+
+Do not move to a newer base to work around a registry problem: the AppImage
+inherits the base's glibc, and a newer one silently raises the minimum host
+version.
+
 ### Other architectures
 
-For aarch64, swap three things: the base image
-(`quay.io/pypa/manylinux_2_28_aarch64`), the Python path
-(`/opt/python/cp312-cp312/bin` — unchanged), and the appimagetool download
-(`appimagetool-aarch64.AppImage`), then build on an ARM host or with
-emulation.
+For aarch64, build on an ARM host (or with emulation) with the aarch64 base and
+swap the appimagetool download:
+
+```bash
+packaging/build-appimage.sh dist \
+    --build-arg BASE_IMAGE=quay.io/pypa/manylinux_2_28_aarch64:latest
+```
+
+then change `appimagetool-x86_64.AppImage` to `appimagetool-aarch64.AppImage` in
+`packaging/Dockerfile.build`. The interpreter needs no change: the build uses
+uv's python-build-standalone at `/opt/venv`, not the base's `/opt/python`.
 
 ## Run
 
