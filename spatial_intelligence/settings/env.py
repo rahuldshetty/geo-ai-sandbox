@@ -1,4 +1,4 @@
-"""Environment and data-root resolution for the Geo-AI harness.
+"""Environment and data-root resolution for the app.
 
 Ported from ``geoai/config.py``; the ``GEOAI_*`` variable names, the
 ``workspaces/`` + ``settings.json`` data-root layout, and the
@@ -66,11 +66,15 @@ def api_key_env_for(model: str) -> str | None:
 def validate_env() -> None:
     """Refuse to start when the configured model's provider key is missing.
 
-    The key is read from ``<app_root>/.env`` (loaded at import time) or from an
-    existing environment variable. Raises ``SystemExit`` with a setup hint when
-    the required variable is absent or empty, so a user never hits a late 500
-    while creating a workspace.
+    ``<app_root>/.env`` is loaded here, so this check answers for both of the
+    documented sources: the process environment and that file. Loading inside
+    the check is deliberate — start-up used to validate before anything had read
+    the file, which reported a key that is present in ``.env`` as missing.
+
+    Raises ``SystemExit`` with a setup hint when the required variable is absent
+    or empty, so a user never hits a late 500 while creating a workspace.
     """
+    load_env()
     model = model_from_env()
     key_var = api_key_env_for(model)
     if key_var is None:
@@ -86,7 +90,8 @@ def validate_env() -> None:
             f"or export {key_var} in the environment."
         )
     raise SystemExit(
-        f"Geo-AI: cannot start — {key_var} is not set (model '{model}'). {detail}"
+        f"Spatial Intelligence: cannot start — {key_var} is not set "
+        f"(model '{model}'). {detail}"
     )
 
 
@@ -122,12 +127,12 @@ def resolve_workspace_name(override: str | None = None) -> str:
     return "default"
 
 def server_base_url() -> str:
-    """Return the Geo-AI server's base URL for same-host file serving.
+    """Return the app server's base URL for same-host file serving.
 
     The server binds ``127.0.0.1`` and serves workspace files from this origin
     (see ``/api/files/``), so the in-iframe map can fetch local rasters without
     the cross-origin failures of the geolibre static server's per-session tokens.
-    The port mirrors the ``GEOAI_PORT`` env var used by ``geoai.server.run``.
+    The port mirrors the ``GEOAI_PORT`` env var used by the server's ``run()``.
     """
     port = os.getenv("GEOAI_PORT", "8000")
     return f"http://127.0.0.1:{port}/"
@@ -150,12 +155,21 @@ def list_workspaces() -> list[str]:
 
 
 def load_env() -> None:
-    """Load ``<app_root>/.env`` into ``os.environ`` (no-op if dotenv is absent).
+    """Load ``<app_root>/.env`` into ``os.environ``.
 
-    Existing environment variables take precedence (dotenv default).
+    Existing environment variables take precedence (dotenv's default) and the
+    call is idempotent, so every entry point can safely resolve configuration
+    from the file. When ``python-dotenv`` is not installed the file is ignored
+    entirely, which is said out loud: in a frozen build that would otherwise
+    surface much later as "the key is not set".
     """
     try:
         from dotenv import load_dotenv
-    except ImportError:  # pragma: no cover
+    except ImportError:  # pragma: no cover - python-dotenv is a dependency
+        print(
+            "spatial-intelligence: python-dotenv is missing, so "
+            f"{app_root() / '.env'} will not be read",
+            file=sys.stderr,
+        )
         return
     load_dotenv(app_root() / ".env")

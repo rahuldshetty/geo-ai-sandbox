@@ -1,4 +1,4 @@
-# Route B build: Geo-AI as a single Linux AppImage.
+# Route B build: Spatial Intelligence as a single Linux AppImage.
 #
 # PyInstaller one-dir bundle built inside manylinux_2_28 (glibc 2.28) so the
 # artifact runs on any distro from ~2019 on. The AppImage wrapper is produced
@@ -7,7 +7,7 @@
 #
 #   docker build -f packaging/Dockerfile.build --output dist .
 #
-# Output: dist/geo-ai-<version>-x86_64.AppImage
+# Output: dist/spatial-intelligence-<version>-x86_64.AppImage
 
 FROM quay.io/pypa/manylinux_2_28_x86_64 AS build
 
@@ -22,9 +22,11 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
 
 WORKDIR /build
 
-# Deps first so the (slow) install layer stays cached while sources churn.
+# Dependencies and the project are installed before the full context copy, so
+# this (slow) layer is reused while unrelated files churn — the entry script,
+# packaging files, docs, and the previous package.
 COPY pyproject.toml ./
-COPY geoai/ geoai/
+COPY spatial_intelligence/ spatial_intelligence/
 COPY app.py ./
 
 RUN uv venv --python 3.12 /opt/venv \
@@ -37,25 +39,31 @@ RUN python -c "import pathlib, sysconfig; lib = pathlib.Path(sysconfig.get_confi
 
 COPY . .
 
-RUN pyinstaller packaging/geo-ai.spec \
+# Ship the pinned Marked bundle instead of letting the app fetch it on first
+# launch: the bundle directory inside a mounted AppImage is read-only, so the
+# runtime bootstrap cannot write there. PYTHONPATH puts the source tree first so
+# the asset lands where PyInstaller will collect it from.
+RUN PYTHONPATH=/build python -c "from spatial_intelligence.server.assets import MARKED_PATH, ensure_frontend_assets; ensure_frontend_assets(); assert MARKED_PATH.is_file() and MARKED_PATH.stat().st_size > 0, 'the Marked bundle is missing'; print('bundled', MARKED_PATH, MARKED_PATH.stat().st_size, 'bytes')"
+
+RUN pyinstaller packaging/spatial-intelligence.spec \
         --noconfirm --distpath dist --workpath build-pyi
 
-# AppDir layout: the PyInstaller bundle lives under usr/lib and usr/bin/geo-ai
-# is a real executable (Exec= must not point at a directory). The desktop file
-# goes to the AppDir root (appimagetool's primary lookup) and to
-# usr/share/applications (freedesktop convention).
+# AppDir layout: the PyInstaller bundle lives under usr/lib and
+# usr/bin/spatial-intelligence is a real executable (Exec= must not point at a
+# directory). The desktop file goes to the AppDir root (appimagetool's primary
+# lookup) and to usr/share/applications (freedesktop convention).
 RUN mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications \
         AppDir/usr/share/icons/hicolor/128x128/apps \
-    && cp -r dist/geo-ai AppDir/usr/lib/geo-ai \
-    && cp packaging/geo-ai.desktop AppDir/geo-ai.desktop \
-    && cp packaging/geo-ai.desktop AppDir/usr/share/applications/geo-ai.desktop \
-    && cp packaging/icon.png AppDir/geo-ai.png \
-    && cp packaging/icon.png AppDir/usr/share/icons/hicolor/128x128/apps/geo-ai.png \
-    && ln -s geo-ai.png AppDir/.DirIcon
+    && cp -r dist/spatial-intelligence AppDir/usr/lib/spatial-intelligence \
+    && cp packaging/spatial-intelligence.desktop AppDir/spatial-intelligence.desktop \
+    && cp packaging/spatial-intelligence.desktop AppDir/usr/share/applications/spatial-intelligence.desktop \
+    && cp packaging/icon.png AppDir/spatial-intelligence.png \
+    && cp packaging/icon.png AppDir/usr/share/icons/hicolor/128x128/apps/spatial-intelligence.png \
+    && ln -s spatial-intelligence.png AppDir/.DirIcon
 
-COPY packaging/geo-ai.sh AppDir/usr/bin/geo-ai
+COPY packaging/spatial-intelligence.sh AppDir/usr/bin/spatial-intelligence
 COPY packaging/AppRun AppDir/AppRun
-RUN chmod +x AppDir/usr/bin/geo-ai AppDir/AppRun
+RUN chmod +x AppDir/usr/bin/spatial-intelligence AppDir/AppRun
 
 RUN APPIMAGETOOL=/tmp/appimagetool \
     && curl -fsSL -o "$APPIMAGETOOL" \
@@ -63,6 +71,6 @@ RUN APPIMAGETOOL=/tmp/appimagetool \
     && chmod +x "$APPIMAGETOOL" \
     && VERSION=$(python -c \
         "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])") \
-    && "$APPIMAGETOOL" --appimage-extract-and-run AppDir "geo-ai-${VERSION}-x86_64.AppImage"
+    && "$APPIMAGETOOL" --appimage-extract-and-run AppDir "spatial-intelligence-${VERSION}-x86_64.AppImage"
 FROM scratch AS artifacts
 COPY --from=build /build/*.AppImage /

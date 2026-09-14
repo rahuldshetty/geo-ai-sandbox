@@ -3,13 +3,16 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "geo-ai"
+name = "spatial-intelligence"
 version = "0.0.1"
-description = "Geospatial-analysis agent in a custom web UI"
+description = "Spatial Intelligence: a geospatial-analysis agent in a custom web UI"
 requires-python = ">=3.11"
 dependencies = [
   "python-dotenv",
-  "pydantic-ai[openai,anthropic,google-gla]",
+  # pydantic-ai already depends on pydantic-ai-slim[openai,anthropic,google,...],
+  # which is what installs the provider SDKs; the [openai,anthropic,google-gla]
+  # extras named here before do not exist and only produced install warnings.
+  "pydantic-ai",
   "pydantic-ai-harness>=0.24.0",
   "rasterio",
   "rioxarray",
@@ -29,10 +32,10 @@ dependencies = [
 gdal = ["gdal"]
 
 [project.scripts]
-geo-ai = "geoai.server:run"
+spatial-intelligence = "spatial_intelligence.server:run"
 
 [tool.setuptools.packages.find]
-include = ["geoai*"]
+include = ["spatial_intelligence*"]
 
 [tool.setuptools.package-data]
-geoai = ["server/static/*"]
+spatial_intelligence = ["web/**/*"]

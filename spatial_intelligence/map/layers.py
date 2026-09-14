@@ -159,7 +159,7 @@ def _local_rel_for_layer(layer: dict, workspace: Workspace) -> str | None:
 def repoint_local_rasters(
     map_obj: Map, workspace: Workspace, file_url: Callable[[str], str]
 ) -> int:
-    """Re-point local raster layers to the stable Geo-AI file route.
+    """Re-point local raster layers to the app's stable file route.
 
     ``add_raster`` embeds a stable ``/api/files/<rel>`` URL served by this
     harness's own server (with CORS), so local rasters survive a server restart

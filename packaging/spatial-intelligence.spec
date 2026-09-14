@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for the Geo-AI one-directory bundle (Route B).
+# PyInstaller spec for the Spatial Intelligence one-directory bundle (Route B).
 # Built inside packaging/Dockerfile.build; entry point is the repo-root app.py.
 
 import os
@@ -8,7 +8,9 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metada
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, ".."))
 
-datas = [(os.path.join(ROOT, "geoai", "server", "static"), "geoai/server/static")]
+# The web front end is plain assets (ES modules, CSS, the marked bundle the
+# build downloads), so it ships as data rather than as importable modules.
+datas = [(os.path.join(ROOT, "spatial_intelligence", "web"), "spatial_intelligence/web")]
 binaries = []
 hiddenimports = [
     # uvicorn resolves loop/protocol modules by import string at runtime
@@ -16,13 +18,16 @@ hiddenimports = [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.http.h11_impl",
     "uvicorn.lifespan.on",
+    # dotenv is imported inside a try/except in settings/env.py; without it a
+    # user's .env file would be ignored entirely in a frozen build.
+    "dotenv",
 ]
 
-# The geoai package and geoai.server load most of their modules lazily via
-# __getattr__/import_module (agent, context, map_view, skills, server.app,
-# server.state, ...), which PyInstaller's static analysis cannot see. Pull in
-# every geoai submodule explicitly so the frozen bundle contains the whole app.
-hiddenimports += collect_submodules("geoai")
+# Several modules are reached only through import strings (the uvicorn app
+# target, the provider/model name resolution), which PyInstaller's static
+# analysis cannot see. Pull in every submodule of the package explicitly so the
+# frozen bundle contains the whole app rather than only what app.py imports.
+hiddenimports += collect_submodules("spatial_intelligence")
 
 # Dynamic imports and bundled data PyInstaller cannot see statically:
 # pydantic-ai resolves providers/models by name (infer_model/infer_provider),
@@ -43,8 +48,17 @@ for pkg in (
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
-# packages that read their own dist metadata (importlib.metadata) at import
-for dist in ("genai_prices", "pydantic_ai", "pydantic_ai_harness", "logfire", "geolibre"):
+# Packages that read their own dist metadata (importlib.metadata) at import.
+# pydantic-ai-slim is the distribution that actually carries pydantic-ai's
+# modules and version; the "pydantic-ai" wheel only depends on it.
+for dist in (
+    "genai_prices",
+    "pydantic_ai",
+    "pydantic_ai_slim",
+    "pydantic_ai_harness",
+    "logfire",
+    "geolibre",
+):
     datas += copy_metadata(dist)
 
 a = Analysis(
@@ -66,7 +80,7 @@ exe = EXE(
     pyz,
     a.scripts,
     exclude_binaries=True,
-    name="geo-ai",
+    name="spatial-intelligence",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -86,5 +100,5 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="geo-ai",
+    name="spatial-intelligence",
 )

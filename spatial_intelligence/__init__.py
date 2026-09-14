@@ -14,6 +14,8 @@ The top level re-exports the pieces most callers need; importing it stays cheap
 (no geolibre, rasterio, or FastAPI import).
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from .contracts import (
     Effect,
     Job,
@@ -62,4 +64,8 @@ __all__ = [
     "tool",
 ]
 
-__version__ = "0.1.0"
+# One source of truth for the version: the installed distribution (pyproject).
+try:  # pragma: no cover - depends on how the tree is imported
+    __version__ = version("spatial-intelligence")
+except PackageNotFoundError:  # pragma: no cover - a checkout that is not installed
+    __version__ = "0.0.0+source"

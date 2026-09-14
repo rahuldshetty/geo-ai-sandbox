@@ -1,7 +1,4 @@
 # Spatial Intelligence — development and release targets.
-#
-# The app is `spatial_intelligence`; `geoai/` is the previous implementation,
-# kept until the packaging flip (see README.md).
 
 VENV   := .venv
 DIST   := dist
@@ -16,19 +13,18 @@ BIN := $(VENV)/bin
 PY  := $(BIN)/python
 endif
 
-# The repo root must be importable: `spatial_intelligence` is not installed as a
-# package until [tool.setuptools.packages.find] lists it (see README "Packaging").
+# The repo root must be importable even before `make venv` has installed the
+# package, and it should win over an installed copy while editing.
 export PYTHONPATH := .
 
-.PHONY: help venv dev run run-legacy test release appimage clean
+.PHONY: help venv dev run test release appimage clean
 
 help:
 	@echo "Targets:"
 	@echo "  make venv         create $(VENV) if missing, then install the package (editable)"
 	@echo "  make dev          run the app (python -m spatial_intelligence.server)"
 	@echo "  make run          alias for make dev"
-	@echo "  make run-legacy   run the previous implementation (python -m geoai.server)"
-	@echo "  make test         run the whole test suite (geoai + spatial_intelligence)"
+	@echo "  make test         run the test suite"
 	@echo "  make release      build the AppImage into $(DIST)/ (requires docker)"
 	@echo "  make appimage     alias for make release"
 	@echo "  make clean        remove $(VENV), caches, and build artifacts"
@@ -61,16 +57,12 @@ dev: $(PY)
 
 run: dev
 
-run-legacy: $(PY)
-	"$(PY)" -m geoai.server
-
 # unittest discovery needs the repo root on the path and `tests/` importable as
 # a package; `export PYTHONPATH := .` above supplies the former.
 test: $(PY)
 	"$(PY)" -m unittest discover -s tests -t . -p "test_*.py"
 
-# The AppImage still packages the previous implementation; it moves to
-# spatial_intelligence when packaging/ is flipped with the entry point.
+# Linux AppImage of this app (see packaging/README.md). Requires docker.
 release:
 	./packaging/build-appimage.sh $(DIST)
 
@@ -78,4 +70,4 @@ appimage: release
 
 clean:
 	rm -rf $(VENV) $(DIST) build build-pyi
-	-find spatial_intelligence geoai tests -name __pycache__ -type d -prune -exec rm -rf {} +
+	-find spatial_intelligence tests -name __pycache__ -type d -prune -exec rm -rf {} +

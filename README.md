@@ -5,10 +5,6 @@ A geospatial-analysis agent in a custom web UI: a live
 notebook panel on the right. Prompt an agent that drives the map and runs
 GDAL/rasterio and GeoPandas work behind the scenes, or run raw Python directly.
 
-The app lives in the `spatial_intelligence` package. `geoai/` is the previous
-implementation, still present and runnable (`make run-legacy`) until the
-packaging flip described at the end of this file.
-
 ## Setup
 
 ```bash
@@ -23,10 +19,10 @@ uv venv .venv && uv pip install -e .          # or: python -m venv .venv
 .venv/Scripts/python.exe -m pip install -e .  # Windows; .venv/bin/python on macOS/Linux
 ```
 
-The app runs from the repo root, which is what puts `spatial_intelligence` on
-the import path (`make dev` and `make test` export `PYTHONPATH=.` for you). It
-becomes importable from anywhere once `pyproject.toml` lists the package — see
-[Packaging](#packaging).
+`make venv` installs the package editable, so `spatial_intelligence` imports
+from anywhere and source edits take effect without reinstalling. `make dev` and
+`make test` also export `PYTHONPATH=.`, so the checkout always wins over any
+installed copy.
 
 `.env` settings (loaded automatically at startup):
 
@@ -69,8 +65,11 @@ runs the whole suite with stdlib `unittest` discovery:
 python -m unittest discover -s tests -t . -p "test_*.py"
 ```
 
-That covers both the `spatial_intelligence` suite (`tests/spatial_intelligence/`)
-and the legacy `geoai` suite (`tests/test_*.py`).
+That runs `tests/spatial_intelligence/`, which covers the app: the tool
+registry and its packs, the workspace/notebook/trace documents, the map and
+layer services, the raster/vector/catalog services, the `run_python` sandbox,
+the session (cells, runs, progress jobs, interactions, retries), the server
+routes, and the web components.
 
 ## Usage
 
@@ -176,20 +175,17 @@ workspace.json   manifest (outputs + version)
 
 ## Packaging
 
-`make release` still builds the AppImage from the previous implementation
-(`packaging/`). Moving it to this package is a deliberate, one-time flip:
+`packaging/` builds a self-contained Linux AppImage of this app — a PyInstaller
+one-dir bundle built inside a manylinux container and wrapped with appimagetool:
 
-1. `pyproject.toml`:
-   - `[tool.setuptools.packages.find] include = ["spatial_intelligence*"]`
-   - `[tool.setuptools.package-data] spatial_intelligence = ["web/**/*"]`
-   - `[project.scripts] geo-ai = "spatial_intelligence.server:run"`
-   - drop the `pydantic-ai[openai,anthropic,google-gla]` extras — pydantic-ai
-     2.x does not define them any more (installs warn about all three), and the
-     providers ship with the package.
-2. Delete `geoai/` and `tests/test_*.py`, and repoint the root `app.py`
-   (`from geoai.server import run`) at `spatial_intelligence.server`.
-3. Point `packaging/geo-ai.spec` and `packaging/README.md` (which names
-   `geoai/config.py`) at the new package, and drop `run-legacy` from the
-   `Makefile`.
+```bash
+make release          # -> dist/spatial-intelligence-<version>-x86_64.AppImage
+```
 
-Until step 1, start the app from the repo root with `make dev`.
+The spec collects everything PyInstaller cannot see statically: the
+`spatial_intelligence` submodules, the `web/` assets, pydantic-ai's
+name-resolved providers, geolibre/pydantic-ai-harness data, and the geo-stack's
+data files (proj.db, GDAL). The image also fetches the pinned `marked` bundle at
+build time, because the bundle directory inside a mounted AppImage is read-only
+and the app cannot download it on first launch. `packaging/README.md` has the
+build stages, the data root, and the aarch64 notes.

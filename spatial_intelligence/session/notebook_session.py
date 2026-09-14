@@ -391,7 +391,7 @@ class NotebookSession:
         else:
             rendered = pformat(args if isinstance(args, dict) else {}, sort_dicts=False)
             source = (
-                f"# GeoAI structured tool call: {name}\n"
+                f"# Spatial Intelligence structured tool call: {name}\n"
                 f"# Replayed by the harness with the active workspace context.\n"
                 f"{name}(**{rendered})"
             )

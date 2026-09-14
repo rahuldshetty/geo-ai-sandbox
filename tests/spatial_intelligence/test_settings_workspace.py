@@ -130,6 +130,45 @@ class EnvTests(DataRootTestCase):
         with patch.dict(os.environ, {"GEOAI_MODEL": "ollama:llama3"}):
             env.validate_env()
 
+    def test_validate_env_reads_the_provider_key_from_the_data_root_env_file(self):
+        # Regression: start-up validated before anything read <app_root>/.env, so
+        # a key that lives only in that file was reported as missing.
+        (self.home / ".env").write_text(
+            "OPENAI_API_KEY=key-that-is-only-in-the-file\n", encoding="utf-8"
+        )
+        os.environ.pop("OPENAI_API_KEY", None)
+        try:
+            env.validate_env()
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+
+    def test_validate_env_resolves_the_model_from_the_settings_file_too(self):
+        # ollama needs no provider key, so this passes only when the file's model
+        # is read before the key requirement is decided.
+        (self.home / ".env").write_text("GEOAI_MODEL=ollama:llama3\n", encoding="utf-8")
+        saved = {
+            name: os.environ.pop(name, None)
+            for name in ("GEOAI_MODEL", "OPENAI_API_KEY")
+        }
+        try:
+            env.validate_env()
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    def test_validate_env_still_refuses_when_neither_source_has_the_key(self):
+        (self.home / ".env").write_text("GEOAI_MODEL=openai:gpt-4o\n", encoding="utf-8")
+        os.environ.pop("OPENAI_API_KEY", None)
+
+        with self.assertRaises(SystemExit) as caught:
+            env.validate_env()
+
+        self.assertIn("OPENAI_API_KEY", str(caught.exception))
+        self.assertIn(str(self.home / ".env"), str(caught.exception))
+
     def test_resolve_workspace_name_prefers_the_explicit_override(self):
         with patch.dict(os.environ, {"GEOAI_WORKSPACE": "from-env"}):
             self.assertEqual(env.resolve_workspace_name(), "from-env")

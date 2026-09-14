@@ -15,12 +15,16 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import ToolCallPart
 
 from spatial_intelligence.session.app_state import AppState
+from spatial_intelligence.session.notebook_session import ordered_notebook_cells
 
 from .support import (
+    Fails,
     FakeResponse,
+    TurnScript,
     answers_with,
     scripted,
     stream_model,
@@ -387,6 +391,124 @@ class InteractionTests(SessionTestCase):
         self.assertEqual(cell["status"], "stopped")
         self.assertIsNone(cell["interaction"])
         self.assertIn("Stopped while waiting", cell["outputs"][0]["text"])
+
+
+class TransientFailureTests(SessionTestCase):
+    """A provider hiccup must not lose work, and must not be replayed blindly.
+
+    The run loop restarts an attempt only when no tool that mutated the
+    workspace or the map has completed; these tests pin both sides of that
+    decision, plus the plan rollback that makes a replay safe.
+    """
+
+    def test_a_failure_after_a_read_only_tool_is_retried(self):
+        script = TurnScript(
+            ToolCallPart("list_files", {}),
+            Fails(ModelHTTPError(503, "test-model")),
+            final="Recovered after the failure.",
+        )
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "list the files")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(cell["outputs"][0]["text"], "Recovered after the failure.")
+        self.assertEqual(script.requests, 3)  # tool call, failure, retry
+        notes = [step.get("content", "") for step in cell["trace"] if step["type"] == "text"]
+        self.assertTrue(any("Retrying" in note for note in notes), notes)
+
+    def test_a_failure_after_a_successful_write_is_not_replayed(self):
+        script = TurnScript(
+            ToolCallPart("search_tools", {"queries": ["write a file"]}),
+            ToolCallPart("write_file", {"path": "results/kept.txt", "content": "kept"}),
+            Fails(ModelHTTPError(503, "test-model")),
+            final="this attempt must never run",
+        )
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "write a note")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+        self.assertEqual(cell["status"], "error")
+        self.assertIn("automatic replay was skipped", cell["outputs"][0]["evalue"])
+        self.assertEqual(script.requests, 3)  # no replay, so no fourth request
+        self.assertEqual(
+            (self.workspace_root / "results" / "kept.txt").read_text(encoding="utf-8"),
+            "kept",
+        )
+
+    def test_a_failure_after_a_write_that_failed_is_retried(self):
+        script = TurnScript(
+            ToolCallPart("search_tools", {"queries": ["write a file"]}),
+            # traces/ is not a writable target, so the tool fails and nothing changed.
+            ToolCallPart("write_file", {"path": "traces/blocked.txt", "content": "nope"}),
+            Fails(ModelHTTPError(503, "test-model")),
+            final="Recovered.",
+        )
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "write a note")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(cell["outputs"][0]["text"], "Recovered.")
+        self.assertEqual(script.requests, 4)  # tool call, failed write, failure, retry
+        self.assertFalse((self.workspace_root / "traces" / "blocked.txt").exists())
+
+    def test_a_retry_restores_the_plan_from_before_the_failed_attempt(self):
+        script = TurnScript(
+            ToolCallPart(
+                "write_plan",
+                {"items": [{"content": "Failed attempt plan", "status": "in_progress"}]},
+            ),
+            Fails(ModelHTTPError(503, "test-model")),
+            final="Recovered.",
+        )
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "plan the work")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(script.requests, 3)
+        # The failed attempt's plan is rolled back, not inherited by the retry.
+        self.assertEqual(asyncio.run(state.services.plan_store.get_items()), [])
+        self.assertTrue(
+            any(step["type"] == "plan" for step in cell["trace"]),
+            [step["type"] for step in cell["trace"]],
+        )
+
+
+class NotebookDocumentTests(SessionTestCase):
+    def test_recorded_provenance_is_saved_after_its_parent_cell(self):
+        prompt = {"id": "prompt-1"}
+        second_prompt = {"id": "prompt-2"}
+        tool = {
+            "id": "tool-1",
+            "metadata": {"geoai": {"generated": True, "parent_cell_id": "prompt-1"}},
+        }
+
+        ordered = ordered_notebook_cells([prompt, second_prompt], [tool])
+
+        self.assertEqual(
+            [cell["id"] for cell in ordered], ["prompt-1", "tool-1", "prompt-2"]
+        )
+
+    def test_provenance_whose_parent_is_gone_is_saved_last(self):
+        prompt = {"id": "prompt-1"}
+        orphan = {
+            "id": "tool-9",
+            "metadata": {"geoai": {"generated": True, "parent_cell_id": "deleted"}},
+        }
+
+        ordered = ordered_notebook_cells([prompt], [orphan])
+
+        self.assertEqual([cell["id"] for cell in ordered], ["prompt-1", "tool-9"])
 
 
 class WorkspaceLifecycleTests(SessionTestCase):

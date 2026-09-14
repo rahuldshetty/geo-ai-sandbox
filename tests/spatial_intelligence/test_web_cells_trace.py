@@ -14,18 +14,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 JS = REPO / "spatial_intelligence" / "web" / "js"
-MARKED = next(
-    (
-        candidate
-        for candidate in (
-            REPO / "spatial_intelligence" / "web" / "vendor" / "marked.min.js",
-            REPO / "geoai" / "server" / "static" / "vendor" / "marked.min.js",
-        )
-        if candidate.is_file()
-    ),
-    None,
-)
+# The bundle is downloaded on the first server start (see web/assets.py), so
+# these component tests skip on a checkout that has never run the app.
+MARKED = REPO / "spatial_intelligence" / "web" / "vendor" / "marked.min.js"
 NODE = shutil.which("node")
+
+if not MARKED.is_file():
+    MARKED = None
 
 COMPONENTS = ("markdown", "plan", "progress", "trace", "interaction", "cell")
 

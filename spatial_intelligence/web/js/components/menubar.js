@@ -31,7 +31,7 @@ export function renderMenubar() {
   bar.append(
     el("div", { class: "brand" }, [
       el("span", { class: "brand-mark", text: "◈" }),
-      el("span", { class: "brand-name", text: "Geo-AI" }),
+      el("span", { class: "brand-name", text: "Spatial Intelligence" }),
     ])
   );
 

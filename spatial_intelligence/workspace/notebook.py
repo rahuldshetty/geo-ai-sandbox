@@ -118,7 +118,7 @@ def cell_to_nb(cell: dict) -> dict:
             "source": source_lines,
         }
     if kind == "prompt":
-        # Prompt cells are executable inside Geo-AI, but serialize as Markdown
+        # Prompt cells are executable inside the app, but serialize as Markdown
         # so the user's request reads naturally in any standard notebook.
         # Runtime details stay in namespaced metadata; agent actions and the
         # final response are recorded as subsequent notebook cells.

@@ -88,6 +88,45 @@ def answers_with(text: str) -> FunctionModel:
     return stream_model(stream)
 
 
+class Fails:
+    """A scripted turn that raises, standing in for a provider failure."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+
+class TurnScript:
+    """A model that plays one scripted turn per model request.
+
+    ``scripted`` advances on tool results, which mirrors a normal run. A retry
+    scenario needs the opposite: the failing attempt must be able to raise, and
+    the test has to count the requests the provider would have seen, so this
+    advances on every request.
+    """
+
+    def __init__(self, *turns, final: str) -> None:
+        self.requests = 0
+        self._turns = turns
+        self._final = final
+        self.model = stream_model(self._stream)
+
+    async def _stream(self, messages, info):
+        index = self.requests
+        self.requests += 1
+        if index >= len(self._turns):
+            yield self._final
+            return
+        turn = self._turns[index]
+        if isinstance(turn, Fails):
+            raise turn.error
+        if isinstance(turn, str):
+            yield turn
+            return
+        yield {
+            0: DeltaToolCall(name=turn.tool_name, json_args=json.dumps(turn.args))
+        }
+
+
 def wait_for(predicate: Callable[[], bool], timeout: float = 30.0) -> bool:
     """Poll ``predicate`` until it holds or ``timeout`` elapses."""
     import time

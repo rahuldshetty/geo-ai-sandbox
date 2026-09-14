@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Build the Geo-AI AppImage via the manylinux build container (Route B).
+# Build the Spatial Intelligence AppImage via the manylinux build container
+# (Route B).
 #
 # Usage: packaging/build-appimage.sh [output-dir]   (default: dist)
 # Requires: docker with BuildKit (docker buildx or docker >= 19.03).
