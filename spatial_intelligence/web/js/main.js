@@ -7,7 +7,7 @@ import { closeAllMenus } from "./components/menubar.js";
 import { revealInteraction } from "./components/interaction.js";
 import { updateJobNode } from "./components/progress.js";
 import { refreshStatusBar } from "./components/status-bar.js";
-import { applyTrace } from "./components/trace.js";
+import { applyTrace, flushPendingTrace } from "./components/trace.js";
 import { connectEvents } from "./events.js";
 import { renderCellsOnly } from "./pages/cells.js";
 import { renderDataOnly } from "./pages/data.js";
@@ -34,6 +34,8 @@ export function boot() {
 
 async function loadState() {
   applySnapshot(await getState());
+  // Steps streamed while the snapshot was in flight are not part of it.
+  flushPendingTrace();
   const pending = state.cells.find(
     (cell) => cell.status === "waiting_for_input" && cell.interaction
   );

@@ -6,6 +6,27 @@ import { cellOutputText, renderMarkdown, visibleTraceGroups } from "./markdown.j
 import { planFromTrace, renderPlan, updatePlan } from "./plan.js";
 import { renderInteraction, reconcilePendingInteraction } from "./interaction.js";
 
+/* Steps published before the snapshot that introduces their cell.
+
+The event stream opens before ``/api/state`` is applied, so a step can arrive
+while ``state.cells`` is still empty. The snapshot landing next already carries
+everything published up to the moment it was built, and that overlap is not
+knowable from here: a buffered step is replayed only when the snapshot does not
+already hold one like it.
+*/
+const pendingTrace = new Map();
+let awaitingSnapshot = true;
+
+function stepKey(step) {
+  if (!step) return "";
+  if (step.tool_call_id) return step.type + ":" + step.tool_call_id;
+  if (step.type === "plan") return "plan:" + JSON.stringify(step.items || []);
+  if (step.type === "usage") return "usage:" + JSON.stringify(step.usage || null);
+  return (
+    step.type + ":" + (step.name || "") + ":" + String(step.content == null ? "" : step.content)
+  );
+}
+
 function isCodeTool(name) {
   return name === "run_python";
 }
@@ -287,16 +308,57 @@ export function appendStep(container, step) {
   container.scrollTop = container.scrollHeight;
 }
 
+/** Store one streamed step on its cell and append it to that cell's live trace. */
+function storeStep(cell, step) {
+  if (!Array.isArray(cell.trace)) cell.trace = [];
+  cell.trace.push(step);
+  if (step.type === "tool_call" && step.name === "request_user_input") {
+    window.setTimeout(() => reconcilePendingInteraction(cell.id), 150);
+  }
+  const container = document.querySelector('.cell[data-cell-id="' + cell.id + '"] .trace');
+  if (container) appendStep(container, step);
+}
+
 /** Store a streamed trace step on its cell and append it to the live trace. */
 export function applyTrace(data) {
-  const idx = state.cells.findIndex((cell) => cell.id === data.id);
-  if (idx === -1) return;
-  if (!Array.isArray(state.cells[idx].trace)) state.cells[idx].trace = [];
-  state.cells[idx].trace.push(data.step);
-  if (data.step.type === "tool_call" && data.step.name === "request_user_input") {
-    window.setTimeout(() => reconcilePendingInteraction(data.id), 150);
+  if (!data || !data.step) return;
+  const cell = state.cells.find((item) => item.id === data.id);
+  if (cell) {
+    storeStep(cell, data.step);
+    return;
   }
-  const container = document.querySelector('.cell[data-cell-id="' + data.id + '"] .trace');
-  if (!container) return;
-  appendStep(container, data.step);
+  if (!awaitingSnapshot) return;
+  const buffered = pendingTrace.get(data.id);
+  if (buffered) buffered.push(data.step);
+  else pendingTrace.set(data.id, [data.step]);
+}
+
+/**
+ * Replay the steps buffered before the first snapshot; called once it lands.
+ *
+ * Steps the snapshot already carries are dropped by key, so a step published
+ * during the boot window is neither lost nor rendered twice.
+ */
+export function flushPendingTrace() {
+  awaitingSnapshot = false;
+  const buffered = [...pendingTrace];
+  pendingTrace.clear();
+  for (const [cellId, steps] of buffered) {
+    const cell = state.cells.find((item) => item.id === cellId);
+    if (!cell) continue;
+    const seen = new Map();
+    for (const step of cell.trace || []) {
+      const key = stepKey(step);
+      seen.set(key, (seen.get(key) || 0) + 1);
+    }
+    for (const step of steps) {
+      const key = stepKey(step);
+      const remaining = seen.get(key) || 0;
+      if (remaining > 0) {
+        seen.set(key, remaining - 1);
+        continue;
+      }
+      storeStep(cell, step);
+    }
+  }
 }

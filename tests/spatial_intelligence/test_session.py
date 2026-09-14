@@ -12,12 +12,15 @@ import os
 import queue
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
 from pydantic_ai.exceptions import ModelHTTPError
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import DeltaToolCall
 
+from spatial_intelligence.agent import capabilities as agent_capabilities
 from spatial_intelligence.session.app_state import AppState
 from spatial_intelligence.session.notebook_session import ordered_notebook_cells
 
@@ -32,6 +35,28 @@ from .support import (
 )
 
 TERMINAL_STATUSES = frozenset({"done", "error", "stopped"})
+
+
+def held_open_model(tool: str = "list_files"):
+    """A model that calls ``tool``, then holds the run open for a beat.
+
+    The pause keeps the cell ``running`` long enough to assert on what the
+    browser can see mid-run.
+    """
+
+    async def stream(messages, info):
+        answered = any(
+            isinstance(part, ToolReturnPart)
+            for message in messages
+            for part in getattr(message, "parts", [])
+        )
+        if answered:
+            await asyncio.sleep(1.0)
+            yield "finished"
+        else:
+            yield {0: DeltaToolCall(name=tool, json_args="{}")}
+
+    return stream_model(stream)
 
 
 class SessionTestCase(unittest.TestCase):
@@ -129,25 +154,7 @@ class PromptRunTests(SessionTestCase):
         container yet, so this pins the other half of the contract — that the
         server publishes steps as they happen rather than once the run ends.
         """
-        from pydantic_ai.models.function import DeltaToolCall
-
-        async def stream(messages, info):
-            from pydantic_ai.messages import ToolReturnPart
-
-            answered = any(
-                isinstance(part, ToolReturnPart)
-                for message in messages
-                for part in getattr(message, "parts", [])
-            )
-            if answered:
-                # Hold the run open after the tool result, so the assertions
-                # below run while the cell is still working.
-                await asyncio.sleep(1.0)
-                yield "finished"
-            else:
-                yield {0: DeltaToolCall(name="list_files", json_args="{}")}
-
-        state = self.start(stream_model(stream))
+        state = self.start(held_open_model())
         subscriber = state.subscribe()
         cell_id = state.add_cell("prompt", "list the files")["cells"][-1]["id"]
 
@@ -167,6 +174,37 @@ class PromptRunTests(SessionTestCase):
 
         cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
         self.assertEqual(cell["status"], "done")
+
+    def test_the_snapshot_carries_the_steps_of_a_running_cell(self):
+        """A reload mid-run must rebuild the trace from ``/api/state``.
+
+        Regression: a run kept its steps in a local list and attached them to
+        the cell only when it finished, so refreshing the browser mid-run
+        dropped every step already on screen and streamed only the rest.
+        """
+        state = self.start(held_open_model())
+        cell_id = state.add_cell("prompt", "list the files")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        # The snapshot serves these very cell dicts, so this is the trace a
+        # browser reloading mid-run rebuilds from.
+        cell = state.notebook.find(cell_id)
+
+        def tool_result_landed() -> bool:
+            return any(step["type"] == "tool_result" for step in cell["trace"])
+
+        self.assertTrue(
+            wait_for(tool_result_landed), "no tool result reached the cell while running"
+        )
+        served = next(
+            entry for entry in state.snapshot()["cells"] if entry["id"] == cell_id
+        )
+        self.assertEqual(served["status"], "running")
+        self.assertEqual(
+            [step["type"] for step in served["trace"]], ["tool_call", "tool_result"]
+        )
+
+        self.assertEqual(self.wait_for_status(state, cell_id, TERMINAL_STATUSES)["status"], "done")
 
     def test_a_prompt_run_persists_its_trace_file(self):
         # list_files is a core tool, so it needs no discovery step.
@@ -482,6 +520,155 @@ class TransientFailureTests(SessionTestCase):
             any(step["type"] == "plan" for step in cell["trace"]),
             [step["type"] for step in cell["trace"]],
         )
+
+
+class ToolFailurePolicyTests(SessionTestCase):
+    """A failing tool call must not cost the model the rest of its prompt.
+
+    A deterministic failure comes back as the call's own failed result — no
+    retry, no retry budget, so it cannot abort the run — while a transient
+    transport failure is retried in place before the model is told anything.
+    """
+
+    @staticmethod
+    def tool_results(cell: dict, name: str) -> list[dict]:
+        return [
+            step
+            for step in cell["trace"]
+            if step.get("type") == "tool_result" and step.get("name") == name
+        ]
+
+    def run_download(self, script: TurnScript, urlopen):
+        """Run one prompt that fails its ``download`` call through ``urlopen``."""
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "download")["cells"][-1]["id"]
+        with (
+            patch(
+                "spatial_intelligence.workspace.files.urllib.request.urlopen",
+                side_effect=urlopen,
+            ),
+            patch.object(agent_capabilities, "TRANSIENT_TOOL_BACKOFF_SECONDS", 0),
+        ):
+            state.run_cell(cell_id)
+            return self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+    def download_call(self) -> ToolCallPart:
+        return ToolCallPart(
+            "download",
+            {"url": "https://example.com/scene.tif", "filename": "scene.tif"},
+        )
+
+    def test_an_invalid_call_comes_back_as_a_failed_result_and_the_run_continues(self):
+        # Five rejected calls would exhaust the tool's retry budget (3) and kill
+        # the prompt before this policy existed.
+        script = TurnScript(
+            ToolCallPart("search_tools", {"queries": ["run some python"]}),
+            *[ToolCallPart("run_python", {"code": 123}) for _ in range(5)],
+            final="Understood, I will pass a string.",
+        )
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "compute")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(cell["outputs"][0]["text"], "Understood, I will pass a string.")
+        failures = self.tool_results(cell, "run_python")
+        self.assertEqual(len(failures), 5)
+        self.assertTrue(all(step["outcome"] == "failed" for step in failures), failures)
+        self.assertIn("rejected these arguments", failures[0]["content"])
+
+    def test_a_transient_tool_failure_is_retried_without_the_models_help(self):
+        attempts: list[str] = []
+
+        def urlopen(request, timeout=0):
+            attempts.append(request.full_url)
+            if len(attempts) == 1:
+                raise urllib.error.URLError("connection reset")
+            return FakeResponse(b"asset")
+
+        script = TurnScript(
+            ToolCallPart("search_tools", {"queries": ["download a url"]}),
+            self.download_call(),
+            final="Downloaded.",
+        )
+
+        cell = self.run_download(script, urlopen)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(len(attempts), 2)
+        # The blip costs no model round trip: discovery, the download, the answer.
+        self.assertEqual(script.requests, 3)
+        results = self.tool_results(cell, "download")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["outcome"], "success")
+        self.assertEqual(
+            (self.workspace_root / "data" / "scene.tif").read_text(encoding="utf-8"),
+            "asset",
+        )
+
+    def test_an_exhausted_transient_failure_is_reported_to_the_model(self):
+        attempts: list[str] = []
+
+        def urlopen(request, timeout=0):
+            attempts.append(request.full_url)
+            raise urllib.error.URLError("connection reset")
+
+        script = TurnScript(
+            ToolCallPart("search_tools", {"queries": ["download a url"]}),
+            self.download_call(),
+            final="The endpoint is down.",
+        )
+
+        cell = self.run_download(script, urlopen)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(len(attempts), agent_capabilities.TRANSIENT_TOOL_ATTEMPTS)
+        failures = self.tool_results(cell, "download")
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0]["outcome"], "failed")
+        self.assertIn("transient remote failure", failures[0]["content"])
+        self.assertEqual(cell["outputs"][0]["text"], "The endpoint is down.")
+
+    def test_a_deterministic_remote_error_is_not_retried(self):
+        attempts: list[str] = []
+
+        def urlopen(request, timeout=0):
+            attempts.append(request.full_url)
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+        script = TurnScript(
+            ToolCallPart("search_tools", {"queries": ["download a url"]}),
+            self.download_call(),
+            final="No such file upstream.",
+        )
+
+        cell = self.run_download(script, urlopen)
+
+        self.assertEqual(cell["status"], "done")
+        self.assertEqual(len(attempts), 1)
+        results = self.tool_results(cell, "download")
+        self.assertEqual(results[0]["outcome"], "failed")
+        self.assertEqual(results[0]["content"], "HTTPError: HTTP Error 404: Not Found")
+
+    def test_a_model_stuck_on_an_uncallable_tool_gets_a_readable_error(self):
+        # The one failure left that can stop a run: the model keeps calling a
+        # tool it may not call. It gets a sentence, not pydantic-ai's budget text.
+        script = TurnScript(
+            *[ToolCallPart("fit_bounds", {"bounds": [0, 0, 1, 1]}) for _ in range(5)],
+            final="never reached",
+        )
+        state = self.start(script.model)
+        cell_id = state.add_cell("prompt", "zoom the map")["cells"][-1]["id"]
+
+        state.run_cell(cell_id)
+        cell = self.wait_for_status(state, cell_id, TERMINAL_STATUSES)
+
+        self.assertEqual(cell["status"], "error")
+        self.assertIn("kept calling 'fit_bounds'", cell["outputs"][0]["evalue"])
+        self.assertIn("search_tools", cell["outputs"][0]["evalue"])
+        self.assertNotIn("pydantic.dev", cell["outputs"][0]["evalue"])
 
 
 class NotebookDocumentTests(SessionTestCase):

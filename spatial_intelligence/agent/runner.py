@@ -8,6 +8,7 @@ layer decides what a trace step, a recorded tool call, or a plan snapshot means.
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +37,15 @@ MAX_RETRY_AFTER_SECONDS = 30.0
 #: Upper bound on exponential backoff.
 MAX_BACKOFF_SECONDS = 8.0
 
+#: pydantic-ai's retry-exhaustion failure. It is the only failure a tool call
+#: can still end a run with now that
+#: :class:`~spatial_intelligence.agent.capabilities.ToolFailurePolicy` answers
+#: every failure it sees with a result: the model kept calling a tool it may not
+#: call — a name that does not exist, or a deferred tool it never discovered.
+_RETRY_EXHAUSTED = re.compile(
+    r"Tool '(?P<tool>[^']+)' exceeded max retries count of (?P<count>\d+)"
+)
+
 
 def is_transient_run_error(error: Exception) -> bool:
     """Return whether replaying a workspace/map-safe attempt may succeed."""
@@ -45,6 +55,29 @@ def is_transient_run_error(error: Exception) -> bool:
         )
     # Non-HTTP ModelAPIError instances represent provider/transport failures.
     return isinstance(error, ModelAPIError)
+
+
+def describe_run_error(error: Exception, registry: ToolRegistry) -> str:
+    """Render a failed run for the cell output.
+
+    Only the retry-exhaustion failure needs translating: its raw text is a
+    pydantic-ai retry-budget complaint with a documentation link, which tells
+    the user nothing about which tool the model was stuck on or why.
+    """
+    match = _RETRY_EXHAUSTED.search(str(error))
+    if match is None:
+        return str(error)
+    name = match["tool"]
+    reason = (
+        "a deferred tool has to be discovered with search_tools before the model may call it"
+        if name in registry
+        else "no tool by that name exists"
+    )
+    return (
+        f"the model kept calling {name!r} after the {match['count']} retries of that call ran "
+        f"out, and {reason}; the prompt was stopped there. The earlier steps are still in the "
+        "trace."
+    )
 
 
 def retry_delay(error: Exception, attempt: int) -> float:
@@ -259,7 +292,11 @@ class PromptRunner:
                     cell_id, result, trace_steps, trace_path, run_id
                 )
 
-        error_text = str(last_error) if last_error is not None else "unknown error"
+        error_text = (
+            describe_run_error(last_error, hooks.registry)
+            if last_error is not None
+            else "unknown error"
+        )
         if retry_block_reason is not None:
             error_text = f"{error_text} ({retry_block_reason})"
         self._finish_trace(cell_id, status="error", error=error_text)

@@ -355,7 +355,12 @@ class AppState:
             cell = self.notebook.find_or_none(cell_id)
             if cell is None:
                 return
+            # The runner streams into the cell's own list. The snapshot serves
+            # these very cell dicts, so a browser that reloads mid-run rebuilds
+            # the whole trace instead of only the steps published after it
+            # reconnected.
             trace_steps = list(cell.get("trace", [])) if resume else []
+            cell["trace"] = trace_steps
         runner = PromptRunner(self._runner_hooks())
         with bind(runtime):
             outcome = runner.run(cell_id, source, trace_steps, token=token, resume=resume)

@@ -800,11 +800,47 @@ const scenarios = {
     trace.applyTrace({ id: "c9", step: { type: "text_delta", content: "hi" } });
     trace.applyTrace({ id: "c9", step: { type: "text_delta", content: "!" } });
     trace.applyTrace({ id: "unknown", step: { type: "text", content: "ignored" } });
+
+    // Steps that arrive before the snapshot introducing their cell are held,
+    // then replayed once it lands: the snapshot already carries the tool call.
+    trace.applyTrace({
+      id: "boot",
+      step: { type: "tool_call", name: "list_files", args: {}, tool_call_id: "t1" },
+    });
+    trace.applyTrace({
+      id: "boot",
+      step: { type: "tool_result", name: "list_files", content: "a.tif", tool_call_id: "t1" },
+    });
+    trace.applyTrace({ id: "boot", step: { type: "text_delta", content: "done" } });
+    state.cells.push(
+      makeCell({
+        id: "boot",
+        kind: "prompt",
+        status: "running",
+        trace: [{ type: "tool_call", name: "list_files", args: {}, tool_call_id: "t1" }],
+      })
+    );
+    const bootBox = el("div", { class: "cell", "data-cell-id": "boot" });
+    const bootTrace = el("div", { class: "trace" });
+    bootBox.append(bootTrace);
+    document.body.append(bootBox);
+    trace.flushPendingTrace();
+
+    // Once the snapshot has landed the buffer is closed: a step for a cell the
+    // snapshot never carried is dropped instead of growing the buffer forever.
+    trace.applyTrace({ id: "gone", step: { type: "text", content: "late" } });
+
     return {
       trace_length: state.cells[0].trace.length,
       container_count: container.childNodes.length,
       text_source: container.lastElementChild.dataset.source,
       text_html: container.lastElementChild.innerHTML,
+      cell_count: state.cells.length,
+      boot_steps: state.cells[1].trace.map((step) => step.type),
+      boot_nodes: bootTrace.childNodes.map((node) => node.getAttribute("class")),
+      late_step_stored: state.cells.some((entry) =>
+        (entry.trace || []).some((step) => step.content === "late")
+      ),
     };
   },
 
@@ -1375,6 +1411,13 @@ class TraceAppendTests(ScenarioCase):
 
 
 class ApplyTraceTests(ScenarioCase):
+    """Streamed steps landing on their cell, including the boot window.
+
+    Regression: the event stream opens before the first snapshot is applied, so
+    steps published in between used to be dropped on the floor — a browser
+    reload mid-run rebuilt only part of the trace.
+    """
+
     SCENARIO = "apply_trace"
 
     def test_streamed_steps_are_stored_and_appended(self):
@@ -1382,6 +1425,19 @@ class ApplyTraceTests(ScenarioCase):
         self.assertEqual(self.result["container_count"], 1)
         self.assertEqual(self.result["text_source"], "hi!")
         self.assertIn("<p>hi!</p>", self.result["text_html"])
+
+    def test_steps_buffered_before_the_snapshot_are_replayed_once(self):
+        self.assertEqual(
+            self.result["boot_steps"], ["tool_call", "tool_result", "text_delta"]
+        )
+        self.assertEqual(
+            self.result["boot_nodes"],
+            ["trace-step tool-result", "trace-step trace-text markdown"],
+        )
+
+    def test_the_buffer_closes_once_the_snapshot_has_landed(self):
+        self.assertEqual(self.result["cell_count"], 2)
+        self.assertFalse(self.result["late_step_stored"])
 
 
 class LiveTraceMountTests(ScenarioCase):

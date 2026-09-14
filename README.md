@@ -96,6 +96,11 @@ routes, and the web components.
   reopened workspace shows each cell's plan and progress again. The agent keeps a
   per-cell task plan (via Pydantic AI Harness `Planning`, captured in the trace)
   and compacts its context in-run (clear old tool results, then summarize).
+  A failing tool call never ends the prompt: a rejected call or a raised tool
+  error comes back to the agent as that call's own failed result, so it can
+  correct course and continue, while a transient network failure (a dropped
+  connection, a timeout, a 5xx) is retried in place before the agent is told
+  anything.
 - **Progress** — every long-running operation (a URL download, a raster warp, a
   catalog search, a `run_python` snippet) reports a progress job to the browser:
   one progress cell per job, attached to the cell that started it, with a label,

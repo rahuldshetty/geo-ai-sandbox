@@ -16,11 +16,16 @@ from pydantic_ai_harness import (
 from pydantic_ai_harness.planning import InMemoryPlanStore
 
 from ..tools.registry import ToolRegistry
-from .capabilities import NormalizeDuplicateToolNames, ToolErrorFeedback
+from .capabilities import NormalizeDuplicateToolNames, ToolFailurePolicy
 from .model import resolve_model
 from .prompt import SYSTEM_PROMPT
 
-#: Tool-call retries before the model sees a hard failure.
+#: Retry prompts one tool call may produce before the run is stopped.
+#:
+#: ``ToolFailurePolicy`` answers every tool failure it can see with a failed
+#: result instead of a retry prompt, so this budget only ever bounds a call the
+#: policy never sees: a tool name the model is not allowed to call yet (an
+#: unknown name, or a deferred tool it never discovered).
 TOOL_RETRIES = 3
 
 
@@ -55,7 +60,7 @@ def build_agent(
             ReinjectSystemPrompt(),
             Planning(store=plan_store),
             NormalizeDuplicateToolNames(),
-            ToolErrorFeedback(),
+            ToolFailurePolicy(),
             TieredCompaction(
                 tiers=[
                     ClearToolResults(max_tokens=1, keep_pairs=3),
